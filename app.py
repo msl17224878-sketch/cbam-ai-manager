@@ -244,8 +244,13 @@ else:
     # 2. 메인 헤더 & 상태창
     st.markdown("## 🏭 대시보드 (Dashboard)")
     
-    # 실시간 환율 정보 표시 (카드 형태)
-    krw_rate = CBAM_DB.get('Iron/Steel', {}).get('exchange_rate', 1450)
+    # 🚨 [수정된 부분] 특정 이름(Iron/Steel) 대신, DB에 있는 첫 번째 품목의 환율을 가져오게 변경
+    if CBAM_DB:
+        first_item = list(CBAM_DB.keys())[0] # 목록의 첫 번째 놈을 잡음 (예: Steel (Bolts/Screws))
+        krw_rate = CBAM_DB[first_item].get('exchange_rate', 1450)
+    else:
+        krw_rate = 1450
+
     st.info(f"💶 **실시간 환율 적용 중:** 1 EUR = **{krw_rate:,.2f} KRW** (Google Finance 연동됨)")
 
     # 3. 파일 업로드 섹션
@@ -345,3 +350,4 @@ else:
                     type="primary",
                     use_container_width=True
                 )
+
