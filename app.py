@@ -188,29 +188,49 @@ def generate_official_excel(data_list):
         
     return output.getvalue()
 
+# ------------------------------------------------
+# 🧪 [테스트 모드] AI 없이 가짜 데이터로 테스트하기
+# ------------------------------------------------
 def analyze_image(image_bytes, filename, username):
-    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    # 원래는 여기서 이미지를 AI에게 보내지만, 지금은 토큰이 없으니 생략합니다.
+    # base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    
+    import random
+    import time
+    
+    # 1. AI가 생각하는 척 (1초 딜레이)
+    time.sleep(1.0) 
+    
+    # 2. 가짜 결과 생성 (사장님 구글 시트에 있는 품목명 중 하나를 넣으세요!)
+    # 랜덤으로 무게와 품목을 바꿔가며 테스트해볼 수 있습니다.
+    
+    mock_data = {
+        "item": "TEST_Bolt_Sample",  # 가짜 품목명
+        "material": "Steel (Bolts/Screws)", # 🚨 중요: 구글 시트에 있는 정확한 이름이어야 함!
+        "weight": 1500, # 가짜 무게 (1500kg)
+        "hs_code": "731800" # 가짜 HS코드
+    }
+    
+    # 3. 계산 로직 태우기 (이건 진짜로 돌아갑니다)
     try:
-        cats = list(CBAM_DB.keys())
-        response = client.chat.completions.create(
-            model="gpt-4o", temperature=0.0,
-            messages=[
-                {"role": "system", "content": f"Classify into: {cats}. For others, use 'Other'. Return JSON: {{'item': '...', 'material': '...', 'weight': ...}} (weight in kg, number only)."},
-                {"role": "user", "content": [{"type": "text", "text": "Analyze invoice."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
-            ],
-            response_format={"type": "json_object"}
-        )
-        data = json.loads(response.choices[0].message.content)
-        # 안전 변환 적용
-        data['weight'] = safe_float(data.get('weight', 0))
+        # 안전 변환 (위에서 만든 safe_float 함수가 있다고 가정)
+        weight_val = float(mock_data['weight'])
         
-        calc = calculate_tax_logic(data.get('material', 'Other'), data['weight'])
-        data.update(calc)
-        data.update({"File Name": filename, "Date": datetime.now().strftime('%Y-%m-%d'), "Company": username.upper()})
-        return data
-    except:
+        calc = calculate_tax_logic(mock_data['material'], weight_val)
+        mock_data.update(calc)
+        
+        # 메타데이터 추가
+        mock_data.update({
+            "File Name": filename, 
+            "Date": datetime.now().strftime('%Y-%m-%d'), 
+            "Company": username.upper()
+        })
+        
+        return mock_data
+        
+    except Exception as e:
+        print(f"테스트 모드 에러: {e}")
         return {"File Name": filename, "Item Name": "Error", "Material": "Other", "Weight (kg)": 0, "bad_tax": 0, "good_tax": 0}
-
 # ==========================================
 # 🖥️ 화면 구성
 # ==========================================
@@ -332,3 +352,4 @@ else:
         excel_data = generate_official_excel(updated_final_results)
         if excel_data:
             st.download_button("📥 엑셀 리포트 다운로드", data=excel_data, file_name="CBAM_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
+
