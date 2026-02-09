@@ -56,38 +56,47 @@ def load_user_data():
         return pd.DataFrame()
 
 # ------------------------------------
-# 2️⃣ CBAM 규정 데이터 로드 함수 (환율 적용됨!)
+# 2️⃣ CBAM 규정 데이터 로드 함수 (진단 모드)
 # ------------------------------------
-@st.cache_data(ttl=300) # 5분마다 갱신
+# 🚨 [진단 1] 캐시 기능 잠시 끔 (무조건 새로 읽어오게 설정)
+# @st.cache_data(ttl=300) 
 def load_cbam_db():
     try:
+        # 데이터 읽기
         df = pd.read_csv(CBAM_DATA_URL)
         df.columns = df.columns.str.strip().str.lower()
         
+        # 🚨 [진단 2] 화면 맨 위에 가져온 데이터를 강제로 보여줌 (확인 후 삭제하세요)
+        st.error("👇 [진단 모드 작동 중] 구글 시트에서 읽어온 데이터입니다. 'exchange_rate' 값이 1738인지 확인하세요.")
+        st.dataframe(df) # 엑셀 표가 화면에 뜹니다!
+
         db = {}
         for _, row in df.iterrows():
             cat = str(row['category']).strip()
-            # 💰 여기서 구글 시트의 실시간 환율(exchange_rate)을 가져옵니다!
-            # 만약 시트에 값이 없으면 기본값 1450원 사용
-            rate = float(row.get('exchange_rate', 1450.0))
+            
+            # 환율 컬럼 확인
+            if 'exchange_rate' in df.columns:
+                rate = float(row.get('exchange_rate', 1450.0))
+            else:
+                st.warning(f"⚠️ 경고: 시트에 'exchange_rate' 컬럼이 없습니다! (현재 컬럼: {list(df.columns)})")
+                rate = 1450.0 # 컬럼 없으면 기본값
 
             db[cat] = {
                 "default": float(row.get('default', 0)),
                 "optimized": float(row.get('optimized', 0)),
                 "hs_code": str(row.get('hs_code', '000000')).split('.')[0], 
                 "price": 85.0,
-                "exchange_rate": rate # 저장
+                "exchange_rate": rate 
             }
         return db
     except Exception as e:
-        print(f"⚠️ 규정 데이터 로드 실패: {e}")
+        st.error(f"🚨 데이터 로드 중 에러 발생: {e}")
         # 비상용 기본값
         return {
             "Iron/Steel": {"default": 2.5, "optimized": 0.5, "hs_code": "731800", "price": 85.0, "exchange_rate": 1450.0},
             "Aluminum": {"default": 8.0, "optimized": 1.5, "hs_code": "760400", "price": 85.0, "exchange_rate": 1450.0},
             "Other": {"default": 0.0, "optimized": 0.0, "hs_code": "000000", "price": 0.0, "exchange_rate": 1450.0}
         }
-
 # 데이터 불러오기
 user_df = load_user_data()
 CBAM_DB = load_cbam_db()
@@ -437,4 +446,5 @@ else:
         if st.button("🔄 초기화"):
             st.session_state['batch_results'] = None
             st.rerun()
+
 
