@@ -53,11 +53,10 @@ def load_user_data():
         return df
     except Exception:
         return pd.DataFrame()
-
 # ------------------------------------
-# 2️⃣ CBAM 규정 데이터 로드 함수 (자동 업데이트 핵심)
+# 2️⃣ CBAM 규정 데이터 로드 함수 (수정됨)
 # ------------------------------------
-@st.cache_data(ttl=300) # 규정은 자주 안 바뀌니 5분마다 갱신
+@st.cache_data(ttl=300) # 5분마다 갱신
 def load_cbam_db():
     try:
         df = pd.read_csv(CBAM_DATA_URL)
@@ -70,14 +69,15 @@ def load_cbam_db():
             db[cat] = {
                 "default": float(row.get('default', 0)),
                 "optimized": float(row.get('optimized', 0)),
-                # HS코드는 소수점 없이 문자열로 변환
                 "hs_code": str(row.get('hs_code', '000000')).split('.')[0], 
-                "price": 85.0 # 탄소 가격은 일단 고정 (나중에 시트에 추가 가능)
+                "price": 85.0 
             }
         return db
     except Exception as e:
-        # 엑셀 못 읽으면 비상용 기본값
-        st.toast(f"⚠️ 규정 데이터 로드 실패: {e}")
+        # 🚨 수정: st.toast를 제거하고 콘솔 로그로 대체 (에러 원인 해결)
+        print(f"⚠️ 규정 데이터 로드 실패: {e}")
+        
+        # 비상용 기본값 반환
         return {
             "Iron/Steel": {"default": 2.5, "optimized": 0.5, "hs_code": "731800", "price": 85.0},
             "Aluminum": {"default": 8.0, "optimized": 1.5, "hs_code": "760400", "price": 85.0},
@@ -409,3 +409,4 @@ else:
         if st.button("🔄 초기화"):
             st.session_state['batch_results'] = None
             st.rerun()
+
