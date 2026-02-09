@@ -333,6 +333,10 @@ else:
                 st.toast("판독 완료! 결과를 확인하고 수정하세요.")
                 st.rerun()
 
+    # -------------------------------------------------------
+    # 👇 여기서부터 끝까지 복사해서 덮어쓰세요 (안전장치 추가됨)
+    # -------------------------------------------------------
+    
     # 결과 리포트 및 수정
     if st.session_state['batch_results']:
         st.divider()
@@ -356,17 +360,28 @@ else:
                 mat_index = mat_options.index(current_mat) if current_mat in mat_options else mat_options.index("Other")
                 new_mat = c1.selectbox("재질", mat_options, index=mat_index, key=f"mat_{idx}")
                 
-                # 2. HS Code 수정 (DB에서 가져온 값 or 사용자 입력)
-                # 재질을 바꾸면 HS코드도 DB에 있는 걸로 추천해줌
+                # 2. HS Code 수정
                 suggested_hs = CBAM_DB.get(new_mat, {}).get('hs_code', '000000')
                 current_hs = row.get('HS Code', suggested_hs)
                 new_hs = c2.text_input("CN Code (HS 6단위)", value=str(current_hs), key=f"hs_{idx}")
                 
-                # 3. 무게 수정
-                new_weight = c3.number_input("중량 (kg)", value=float(row.get('Weight (kg)', 0)), key=f"w_{idx}")
+                # 🚨 [수정된 부분] 무게 데이터 안전 변환 (에러 방지 핵심!)
+                raw_weight = row.get('Weight (kg)', 0)
+                try:
+                    # 만약 문자열이면 쉼표(,) 제거하고 kg 글자도 뺌
+                    if isinstance(raw_weight, str):
+                        raw_weight = raw_weight.replace(',', '').replace('kg', '').replace('KG', '').strip()
+                        if raw_weight == '': raw_weight = 0
+                    
+                    safe_weight = float(raw_weight)
+                except:
+                    # 그래도 에러나면 0으로 처리 (앱이 죽는 것 방지)
+                    safe_weight = 0.0
+
+                # 3. 무게 수정 (이제 safe_weight를 써서 에러 안 남)
+                new_weight = c3.number_input("중량 (kg)", value=safe_weight, key=f"w_{idx}")
                 
                 # 재계산 (라이브)
-                # 1) 재질이 바뀌었으니 다시 DB 참조
                 recalc = calculate_tax_logic(new_mat, new_weight)
                 
                 # 4. 결과 표시
@@ -397,7 +412,7 @@ else:
                 use_container_width=True
             )
         
-        # ⚠️ 법적 면책 조항 (필수)
+        # ⚠️ 법적 면책 조항
         st.markdown("---")
         st.warning("""
         **⚖️ [법적 고지 및 면책 조항]**
@@ -409,4 +424,3 @@ else:
         if st.button("🔄 초기화"):
             st.session_state['batch_results'] = None
             st.rerun()
-
