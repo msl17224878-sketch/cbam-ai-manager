@@ -197,7 +197,7 @@ else:
             st.success(f"🪙 남은 크레딧: **{user_credits}**회")
         else:
             st.error("❌ 크레딧 부족 (충전 필요)")
-            st.info("입금처: 국민은행 000-000-000")
+            st.info("입금처: 토스뱅크 1000-5994-4686")
 
         if st.button("로그아웃"):
             st.session_state['logged_in'] = False
@@ -297,3 +297,4 @@ else:
         if st.button("🔄 초기화 (처음으로)"):
             st.session_state['batch_results'] = None
             st.rerun()
+
