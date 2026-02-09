@@ -132,7 +132,7 @@ def calculate_tax_logic(material, weight):
     }
 
 # ------------------------------------------------
-# 🇪🇺 EU 공식 양식 엑셀 생성
+# 🇪🇺 EU 공식 양식 엑셀 생성 (EUR / KRW 동시 표기)
 # ------------------------------------------------
 def generate_official_excel(data_list):
     if not data_list:
@@ -147,15 +147,26 @@ def generate_official_excel(data_list):
             'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'fg_color': '#004494', 'font_color': 'white', 'border': 1})
         cell_format = workbook.add_format({'border': 1, 'valign': 'vcenter'})
         num_format = workbook.add_format({'border': 1, 'valign': 'vcenter', 'num_format': '#,##0.00'})
-        krw_format = workbook.add_format({'border': 1, 'valign': 'vcenter', 'num_format': '#,##0'})
+        eur_format = workbook.add_format({'border': 1, 'valign': 'vcenter', 'num_format': '€#,##0.00'}) # 유로 스타일
+        krw_format = workbook.add_format({'border': 1, 'valign': 'vcenter', 'num_format': '₩#,##0'})    # 원화 스타일
         
         # 1. Summary 시트
         ws_summary = workbook.add_worksheet("Report_Summary")
-        summary_headers = ["Report Date", "Company", "Total Items", "Total Weight (Ton)", "Total Est. Tax (KRW)"]
+        summary_headers = ["Report Date", "Company", "Total Items", "Total Weight (Ton)", "Total Tax (EUR)", "Total Tax (KRW)"]
         
         total_items = len(data_list)
         total_weight_ton = sum([d.get('Weight (kg)', 0) for d in data_list]) / 1000
-        total_tax = sum([d.get('Default Tax (KRW)', 0) for d in data_list])
+        
+        # 세금 합계 계산
+        total_tax_krw = sum([d.get('Default Tax (KRW)', 0) for d in data_list])
+        # 역산해서 유로 합계 구하기 (정확도를 위해 개별 합산이 좋지만 약식으로)
+        total_tax_eur = 0
+        for d in data_list:
+            # 원화 / 환율 = 유로
+            rate = d.get('exchange_rate', 1450)
+            if rate > 0:
+                total_tax_eur += d.get('Default Tax (KRW)', 0) / rate
+
         company_name = data_list[0].get('Company', 'Unknown') if data_list else ""
         
         for col, h in enumerate(summary_headers):
@@ -165,15 +176,16 @@ def generate_official_excel(data_list):
         ws_summary.write(1, 1, company_name, cell_format)
         ws_summary.write(1, 2, total_items, cell_format)
         ws_summary.write(1, 3, total_weight_ton, num_format)
-        ws_summary.write(1, 4, total_tax, krw_format)
-        ws_summary.set_column('A:E', 25)
+        ws_summary.write(1, 4, total_tax_eur, eur_format) # 유로 표시
+        ws_summary.write(1, 5, total_tax_krw, krw_format) # 원화 표시
+        ws_summary.set_column('A:F', 20)
 
         # 2. Data 시트
         ws_data = workbook.add_worksheet("CBAM_Data_For_Submission")
         data_headers = [
-            "Line No", "Origin Country", "CN Code (HS Code)", "Goods Name", 
-            "Net Mass (Tonnes)", "Direct Emissions (tCO2e/t)", "Total Emissions (tCO2e)", 
-            "Applied Exch. Rate", "Est. Tax (KRW)"
+            "Line No", "Origin Country", "CN Code", "Goods Name", 
+            "Net Mass (Ton)", "Direct Emissions (tCO2e/t)", "Total Emissions (tCO2e)", 
+            "Est. Tax (EUR)", "Exch. Rate", "Est. Tax (KRW)" # 유로 칸 추가!
         ]
         
         for col, h in enumerate(data_headers):
@@ -187,12 +199,13 @@ def generate_official_excel(data_list):
             factor = 0
             rate = 1450.0
             
-            # DB에서 값 조회 (환율 포함)
             if mat in CBAM_DB:
                 factor = CBAM_DB[mat]['default']
                 rate = CBAM_DB[mat]['exchange_rate']
             
             total_emissions = weight_ton * factor
+            tax_krw = data.get('Default Tax (KRW)', 0)
+            tax_eur = tax_krw / rate if rate > 0 else 0 # 유로 계산
             
             ws_data.write(row, 0, row, cell_format)
             ws_data.write(row, 1, "KR (Korea)", cell_format)
@@ -201,12 +214,16 @@ def generate_official_excel(data_list):
             ws_data.write(row, 4, weight_ton, num_format)
             ws_data.write(row, 5, factor, num_format)
             ws_data.write(row, 6, total_emissions, num_format)
-            ws_data.write(row, 7, rate, num_format) # 환율 정보 추가!
-            ws_data.write(row, 8, data.get('Default Tax (KRW)', 0), krw_format)
             
-        ws_data.set_column('A:I', 20)
+            # 여기가 핵심 변경 사항 👇
+            ws_data.write(row, 7, tax_eur, eur_format)  # 유로 금액 (EU 바이어용)
+            ws_data.write(row, 8, rate, num_format)     # 적용 환율
+            ws_data.write(row, 9, tax_krw, krw_format)  # 원화 금액 (한국 사장님용)
+            
+        ws_data.set_column('A:J', 18)
         
     return output.getvalue()
+
 
 # ------------------------------------------------
 # 🧠 AI 분석 함수
@@ -420,3 +437,4 @@ else:
         if st.button("🔄 초기화"):
             st.session_state['batch_results'] = None
             st.rerun()
+
