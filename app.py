@@ -7,7 +7,7 @@ from openai import OpenAI
 from datetime import datetime
 
 # ==========================================
-# 🎨 [UI 설정] 페이지 디자인 및 스타일링
+# 🎨 [UI 설정]
 # ==========================================
 st.set_page_config(
     page_title="CBAM Master Pro", 
@@ -16,7 +16,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 🖌️ 커스텀 CSS (불필요한 메뉴 숨김 & 디자인 강화)
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -26,10 +25,6 @@ st.markdown("""
         font-size: 24px;
         color: #004494;
         font-weight: bold;
-    }
-    .big-font {
-        font-size:18px !important;
-        color: #333333;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -68,7 +63,7 @@ def load_user_data():
 def load_cbam_db():
     try:
         df = pd.read_csv(CBAM_DATA_URL)
-        # 헤더 보정 로직 (category 오류 방지)
+        # 헤더 보정 로직
         first_cell = str(df.iloc[0,0]).strip().lower()
         if 'category' not in df.columns.str.lower() and first_cell == 'category':
             new_header = df.iloc[0]
@@ -98,12 +93,32 @@ def load_cbam_db():
 user_df = load_user_data()
 CBAM_DB = load_cbam_db()
 
+# ------------------------------------------------
+# 🛠️ [핵심 수정] 숫자 안전 변환 함수 (에러 방지용)
+# ------------------------------------------------
+def safe_float(value):
+    try:
+        # 쉼표, 문자(kg) 제거 후 실수 변환
+        clean_val = str(value).replace(',', '').replace('kg', '').replace('KG', '').strip()
+        return float(clean_val)
+    except:
+        return 0.0
+
 # ==========================================
-# 🧮 핵심 로직 (계산 & 엑셀)
+# 🧮 핵심 로직
 # ==========================================
 def calculate_tax_logic(material, weight):
-    db = CBAM_DB.get(material, CBAM_DB.get("Iron/Steel", {"default":0, "optimized":0, "price":0, "exchange_rate":1450}))
-    if material == "Other": db = CBAM_DB.get("Other", {"default":0, "optimized":0, "price":0, "exchange_rate":1450})
+    # DB에 없는 재질이면 첫 번째 품목이나 기본값 사용
+    if material in CBAM_DB:
+        db = CBAM_DB[material]
+    elif CBAM_DB:
+        first_key = list(CBAM_DB.keys())[0]
+        db = CBAM_DB[first_key]
+    else:
+        db = {"default":0, "optimized":0, "price":0, "exchange_rate":1450}
+
+    if material == "Other": 
+        db = CBAM_DB.get("Other", {"default":0, "optimized":0, "price":0, "exchange_rate":1450})
     
     if weight <= 0: weight = 1
     rate = db.get('exchange_rate', 1450.0)
@@ -121,14 +136,12 @@ def generate_official_excel(data_list):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         wb = writer.book
-        # 스타일 정의
-        fmt_header = wb.add_format({'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'fg_color': '#004494', 'font_color': 'white', 'border': 1})
-        fmt_cell = wb.add_format({'border': 1, 'valign': 'vcenter'})
-        fmt_num = wb.add_format({'border': 1, 'valign': 'vcenter', 'num_format': '#,##0.00'})
-        fmt_eur = wb.add_format({'border': 1, 'valign': 'vcenter', 'num_format': '€#,##0.00'})
-        fmt_krw = wb.add_format({'border': 1, 'valign': 'vcenter', 'num_format': '₩#,##0'})
+        fmt_header = wb.add_format({'bold': True, 'fg_color': '#004494', 'font_color': 'white', 'border': 1})
+        fmt_num = wb.add_format({'border': 1, 'num_format': '#,##0.00'})
+        fmt_eur = wb.add_format({'border': 1, 'num_format': '€#,##0.00'})
+        fmt_krw = wb.add_format({'border': 1, 'num_format': '₩#,##0'})
         
-        # Summary Sheet
+        # Summary
         ws1 = wb.add_worksheet("Report_Summary")
         headers1 = ["Report Date", "Company", "Total Items", "Total Weight (Ton)", "Total Tax (EUR)", "Total Tax (KRW)"]
         
@@ -136,38 +149,42 @@ def generate_official_excel(data_list):
         t_tax_eur = sum([d.get('Default Tax (KRW)', 0) / d.get('exchange_rate', 1450) for d in data_list if d.get('exchange_rate', 0) > 0])
         
         for c, h in enumerate(headers1): ws1.write(0, c, h, fmt_header)
-        ws1.write(1, 0, datetime.now().strftime('%Y-%m-%d'), fmt_cell)
-        ws1.write(1, 1, data_list[0].get('Company', ''), fmt_cell)
-        ws1.write(1, 2, len(data_list), fmt_cell)
+        ws1.write(1, 0, datetime.now().strftime('%Y-%m-%d'))
+        ws1.write(1, 1, data_list[0].get('Company', ''))
+        ws1.write(1, 2, len(data_list))
         ws1.write(1, 3, sum([d.get('Weight (kg)', 0) for d in data_list])/1000, fmt_num)
         ws1.write(1, 4, t_tax_eur, fmt_eur)
         ws1.write(1, 5, t_tax_krw, fmt_krw)
-        ws1.set_column('A:F', 22)
+        ws1.set_column('A:F', 20)
 
-        # Data Sheet
+        # Data
         ws2 = wb.add_worksheet("CBAM_Data")
-        headers2 = ["No", "Origin", "HS Code", "Item", "Weight (Ton)", "Emission Factor", "Total Emissions", "Est. Tax (EUR)", "Exch. Rate", "Est. Tax (KRW)"]
+        headers2 = ["No", "Origin", "HS Code", "Item", "Weight (Ton)", "Emission Factor", "Est. Tax (EUR)", "Exch. Rate", "Est. Tax (KRW)"]
         for c, h in enumerate(headers2): ws2.write(0, c, h, fmt_header)
         
         for i, d in enumerate(data_list):
             r = i + 1
             w_ton = d.get('Weight (kg)', 0) / 1000
             mat = d.get('Material', 'Iron/Steel')
-            db_info = CBAM_DB.get(mat, {})
+            
+            # DB 조회 안전장치
+            if mat in CBAM_DB: db_info = CBAM_DB[mat]
+            elif CBAM_DB: db_info = CBAM_DB[list(CBAM_DB.keys())[0]]
+            else: db_info = {'default':0, 'exchange_rate':1450}
+
             factor = db_info.get('default', 0)
             rate = db_info.get('exchange_rate', 1450)
             
-            ws2.write(r, 0, r, fmt_cell)
-            ws2.write(r, 1, "KR", fmt_cell)
-            ws2.write(r, 2, d.get('HS Code', ''), fmt_cell)
-            ws2.write(r, 3, d.get('Item Name', ''), fmt_cell)
+            ws2.write(r, 0, r)
+            ws2.write(r, 1, "KR")
+            ws2.write(r, 2, d.get('HS Code', ''))
+            ws2.write(r, 3, d.get('Item Name', ''))
             ws2.write(r, 4, w_ton, fmt_num)
             ws2.write(r, 5, factor, fmt_num)
-            ws2.write(r, 6, w_ton * factor, fmt_num)
-            ws2.write(r, 7, (d.get('Default Tax (KRW)', 0)/rate) if rate>0 else 0, fmt_eur)
-            ws2.write(r, 8, rate, fmt_num)
-            ws2.write(r, 9, d.get('Default Tax (KRW)', 0), fmt_krw)
-        ws2.set_column('A:J', 18)
+            ws2.write(r, 6, (d.get('Default Tax (KRW)', 0)/rate) if rate>0 else 0, fmt_eur)
+            ws2.write(r, 7, rate, fmt_num)
+            ws2.write(r, 8, d.get('Default Tax (KRW)', 0), fmt_krw)
+        ws2.set_column('A:I', 18)
         
     return output.getvalue()
 
@@ -184,31 +201,31 @@ def analyze_image(image_bytes, filename, username):
             response_format={"type": "json_object"}
         )
         data = json.loads(response.choices[0].message.content)
-        calc = calculate_tax_logic(data.get('material', 'Other'), data.get('weight', 0))
+        # 안전 변환 적용
+        data['weight'] = safe_float(data.get('weight', 0))
+        
+        calc = calculate_tax_logic(data.get('material', 'Other'), data['weight'])
         data.update(calc)
         data.update({"File Name": filename, "Date": datetime.now().strftime('%Y-%m-%d'), "Company": username.upper()})
         return data
     except:
-        return {"File Name": filename, "Item Name": "Error", "Material": "Other", "Weight (kg)": 0, "bad_tax": 0, "good_tax": 0, "savings": 0}
+        return {"File Name": filename, "Item Name": "Error", "Material": "Other", "Weight (kg)": 0, "bad_tax": 0, "good_tax": 0}
 
 # ==========================================
-# 🖥️ 화면 구성 (여기서부터 디자인 대개조)
+# 🖥️ 화면 구성
 # ==========================================
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'batch_results' not in st.session_state: st.session_state['batch_results'] = None
 
-# --- [화면 1] 로그인 페이지 ---
+# --- [화면 1] 로그인 ---
 if not st.session_state['logged_in']:
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
         st.markdown("<br><br><h1 style='text-align: center; color: #004494;'>🌍 CBAM Master Pro</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; color: grey;'>EU 탄소국경조정제도 대응을 위한 AI 자동화 솔루션</p>", unsafe_allow_html=True)
-        
         with st.container(border=True):
-            username = st.text_input("아이디", placeholder="기업 아이디를 입력하세요")
-            password = st.text_input("비밀번호", type="password", placeholder="비밀번호를 입력하세요")
-            
+            username = st.text_input("아이디")
+            password = st.text_input("비밀번호", type="password")
             if st.button("로그인", type="primary", use_container_width=True):
                 if not user_df.empty:
                     match = user_df[(user_df['username'] == username) & (user_df['password'].astype(str) == password) & (user_df['active'] == 'o')]
@@ -217,57 +234,46 @@ if not st.session_state['logged_in']:
                         st.session_state['username'] = username
                         st.rerun()
                     else:
-                        st.error("❌ 로그인 정보가 올바르지 않습니다.")
+                        st.error("❌ 로그인 실패")
                 else:
-                    st.error("⚠️ 시스템 점검 중")
+                    st.error("⚠️ DB 연결 실패")
 
-# --- [화면 2] 메인 대시보드 ---
+# --- [화면 2] 대시보드 ---
 else:
-    # 1. 사이드바 (사용자 정보)
     with st.sidebar:
         st.title("CBAM Master")
         st.success("🟢 System Online")
         st.divider()
         st.write(f"👤 **{st.session_state['username'].upper()}** 님")
-        
-        try:
-            creds = int(user_df[user_df['username'] == st.session_state['username']].iloc[0]['credits'])
-            st.metric("잔여 크레딧", f"{creds} 회")
-        except:
-            st.metric("잔여 크레딧", "0 회")
-            
+        try: creds = int(user_df[user_df['username'] == st.session_state['username']].iloc[0]['credits'])
+        except: creds = 0
+        st.metric("잔여 크레딧", f"{creds} 회")
         st.markdown("---")
         if st.button("로그아웃"):
             st.session_state['logged_in'] = False
             st.rerun()
 
-    # 2. 메인 헤더 & 상태창
     st.markdown("## 🏭 대시보드 (Dashboard)")
     
-    # 🚨 [수정된 부분] 특정 이름(Iron/Steel) 대신, DB에 있는 첫 번째 품목의 환율을 가져오게 변경
+    # 💰 [수정 완료] 실시간 환율 표시 (DB 첫번째 항목 기준)
     if CBAM_DB:
-        first_item = list(CBAM_DB.keys())[0] # 목록의 첫 번째 놈을 잡음 (예: Steel (Bolts/Screws))
+        first_item = list(CBAM_DB.keys())[0]
         krw_rate = CBAM_DB[first_item].get('exchange_rate', 1450)
     else:
         krw_rate = 1450
-
     st.info(f"💶 **실시간 환율 적용 중:** 1 EUR = **{krw_rate:,.2f} KRW** (Google Finance 연동됨)")
 
-    # 3. 파일 업로드 섹션
     with st.container(border=True):
         st.subheader("📂 인보이스 업로드")
-        uploaded_files = st.file_uploader("드래그 앤 드롭으로 파일을 추가하세요", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+        uploaded_files = st.file_uploader("파일 추가", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
         
         if uploaded_files:
-            st.write(f"총 {len(uploaded_files)}개의 파일이 선택되었습니다.")
-            if st.button(f"🚀 AI 분석 시작 ({len(uploaded_files)} Credit 차감)", type="primary"):
-                progress_text = "AI가 문서를 분석하고 배출량을 계산 중입니다..."
+            if st.button(f"🚀 AI 분석 시작", type="primary"):
+                progress_text = "AI 분석 중..."
                 my_bar = st.progress(0, text=progress_text)
-                
                 all_results = []
                 for i, file in enumerate(uploaded_files):
                     res = analyze_image(file.read(), file.name, st.session_state['username'])
-                    # 매핑
                     mapped = res.copy()
                     mapped["Default Tax (KRW)"] = res.get("bad_tax")
                     mapped["Item Name"] = res.get("item")
@@ -279,75 +285,50 @@ else:
                     my_bar.progress((i + 1) / len(uploaded_files))
                 
                 st.session_state['batch_results'] = all_results
-                st.toast("✅ 분석이 완료되었습니다!")
                 st.rerun()
 
-    # 4. 결과 리포트 및 수정 섹션
     if st.session_state['batch_results']:
         st.divider()
-        st.subheader("📊 분석 결과 및 리포트 (Review)")
-        
+        st.subheader("📊 분석 결과 (Review)")
         results = st.session_state['batch_results']
         updated_final_results = []
         
-        # 상단 요약 지표 (Metrics)
+        # 🚨 [수정 완료] 합계 계산 시 안전 변환 적용 (에러 원인 해결)
         total_tax_krw = sum([r.get('Default Tax (KRW)', 0) for r in results])
-        total_weight = sum([float(r.get('Weight (kg)', 0)) for r in results])
+        total_weight = sum([safe_float(r.get('Weight (kg)', 0)) for r in results])
         
         m1, m2, m3 = st.columns(3)
         m1.metric("총 항목 수", f"{len(results)} 개")
         m2.metric("총 중량", f"{total_weight:,.0f} kg")
-        m3.metric("총 예상 세금 (KRW)", f"₩ {total_tax_krw:,.0f}")
+        m3.metric("총 예상 세금", f"₩ {total_tax_krw:,.0f}")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # 개별 항목 수정 카드
         mat_options = list(CBAM_DB.keys())
         if "Other" not in mat_options: mat_options.append("Other")
 
         for idx, row in enumerate(results):
             with st.expander(f"📄 {row['File Name']} : {row['Item Name']}", expanded=False):
-                col_a, col_b, col_c = st.columns([2, 1, 1])
-                
-                # 재질 및 HS코드
+                c1, c2, c3 = st.columns([2, 1, 1])
                 curr_mat = row.get('Material', 'Other')
-                mat_idx = mat_options.index(curr_mat) if curr_mat in mat_options else mat_options.index("Other")
-                new_mat = col_a.selectbox("품목 분류 (재질)", mat_options, index=mat_idx, key=f"m_{idx}")
+                if curr_mat not in mat_options: curr_mat = "Other"
                 
+                new_mat = c1.selectbox("재질", mat_options, index=mat_options.index(curr_mat), key=f"m_{idx}")
                 sugg_hs = CBAM_DB.get(new_mat, {}).get('hs_code', '000000')
-                new_hs = col_b.text_input("HS Code", value=str(row.get('HS Code', sugg_hs)), key=f"h_{idx}")
+                new_hs = c2.text_input("HS Code", value=str(row.get('HS Code', sugg_hs)), key=f"h_{idx}")
                 
-                # 무게 안전 변환
-                try:
-                    w_val = float(str(row.get('Weight (kg)', 0)).replace(',','').replace('kg','').strip())
-                except: w_val = 0.0
-                new_weight = col_c.number_input("중량 (kg)", value=w_val, key=f"w_{idx}")
+                # 🚨 [수정 완료] 개별 수정 시에도 안전 변환 적용
+                w_val = safe_float(row.get('Weight (kg)', 0))
+                new_weight = c3.number_input("중량 (kg)", value=w_val, key=f"w_{idx}")
                 
-                # 재계산
                 recalc = calculate_tax_logic(new_mat, new_weight)
                 row.update({
                     'Material': new_mat, 'HS Code': new_hs, 'Weight (kg)': new_weight,
                     'Default Tax (KRW)': recalc['bad_tax'], 'exchange_rate': recalc['exchange_rate']
                 })
                 updated_final_results.append(row)
-                
-                st.caption(f"✔ 적용 환율: {recalc['exchange_rate']:,.2f} 원 | 배출계수: {CBAM_DB.get(new_mat, {}).get('default', 0)}")
 
-        # 5. 다운로드 존
         st.divider()
         excel_data = generate_official_excel(updated_final_results)
-        
-        d1, d2 = st.columns([3, 1])
-        with d1:
-            st.info("💡 **Tip:** 최종 리포트는 EU CBAM 공식 제출 양식에 맞춰져 있습니다.")
-        with d2:
-            if excel_data:
-                st.download_button(
-                    label="📥 엑셀 리포트 다운로드",
-                    data=excel_data,
-                    file_name=f"CBAM_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True
-                )
-
+        if excel_data:
+            st.download_button("📥 엑셀 리포트 다운로드", data=excel_data, file_name="CBAM_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
