@@ -12,10 +12,9 @@ from datetime import datetime
 st.set_page_config(page_title="AI CBAM Master", page_icon="🌍", layout="wide")
 
 # ==========================================
-# 🔑 API 키 설정 (보안 유지)
+# 🔑 API 키 설정
 # ==========================================
 try:
-    # Streamlit Secrets에서 API 키를 가져옵니다.
     api_key = st.secrets["OPENAI_API_KEY"]
     client = OpenAI(api_key=api_key)
 except FileNotFoundError:
@@ -26,35 +25,33 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 📱 구글 시트 연동 (실시간 장부) - 사장님 링크 적용 완료!
+# 📱 구글 시트 연동 (크레딧 장부 포함)
 # ==========================================
-# 사장님이 주신 그 링크입니다.
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqCIpXf7jM4wyn8EhpoZipkUBQ2K43rEiaNi-KyoaI1j93YPNMLpavW07-LddivnoUL-FKFDMCFPkI/pub?gid=0&single=true&output=csv"
 
-@st.cache_data(ttl=60) # ⚡ 중요: 60초마다 장부를 새로고침합니다 (데이터 절약 + 속도)
-def load_users():
+@st.cache_data(ttl=60) # 60초마다 장부 새로고침
+def load_user_data():
     try:
         # 1. 엑셀(CSV) 읽어오기
         df = pd.read_csv(SHEET_URL)
         
-        # 2. 혹시 모를 공백 제거 (실수 방지)
+        # 2. 공백 제거 및 소문자 변환 (오류 방지)
         df.columns = df.columns.str.strip().str.lower()
         df['username'] = df['username'].astype(str).str.strip()
         df['password'] = df['password'].astype(str).str.strip()
         df['active'] = df['active'].astype(str).str.strip().str.lower()
         
-        # 3. 'active' 칸에 'o'라고 적힌 사람만 골라내기
-        active_users = df[df['active'] == 'o']
+        # credits 컬럼이 비어있거나 없으면 0으로 처리
+        if 'credits' not in df.columns:
+            df['credits'] = 0
+        df['credits'] = pd.to_numeric(df['credits'], errors='coerce').fillna(0).astype(int)
         
-        # 4. 아이디:비번 형태로 변환해서 내보내기
-        return dict(zip(active_users['username'], active_users['password']))
+        return df
     except Exception as e:
-        # 엑셀에 문제가 생기면 비상용 계정(admin)만 작동
-        return {"admin": "1234"}
+        return pd.DataFrame()
 
-# 여기서 장부를 불러옵니다!
-CLIENT_DB = load_users()
-
+# 장부 불러오기
+user_df = load_user_data()
 
 # 📊 CBAM 데이터베이스
 CBAM_DB = {
@@ -97,19 +94,14 @@ def calculate_tax_logic(material, weight):
 def generate_bulk_excel(data_list):
     if not data_list:
         return None
-        
     df = pd.DataFrame(data_list)
-    
     required_cols = ["Date", "Company", "File Name", "Item Name", "Material", "Weight (kg)", "Default Tax (KRW)", "Optimized Tax (KRW)", "Savings (KRW)"]
     for col in required_cols:
         if col not in df.columns:
             df[col] = ""
-
     df['Status'] = df['Material'].apply(lambda x: "Exempt (면제)" if x == 'Other' else "Target (대상)")
-    
     columns_order = ["Date", "Company", "File Name", "Item Name", "Material", "Status", 
                      "Weight (kg)", "Default Tax (KRW)", "Optimized Tax (KRW)", "Savings (KRW)"]
-    
     final_cols = [col for col in columns_order if col in df.columns]
     df = df[final_cols]
 
@@ -146,18 +138,13 @@ def analyze_image(image_bytes, filename, username):
             response_format={"type": "json_object"}
         )
         data = json.loads(response.choices[0].message.content)
-        
         calc = calculate_tax_logic(data.get('material', 'Other'), data.get('weight', 0))
         data.update(calc)
-        
         if not data.get('item'): data['item'] = "Unidentified"
-        
         data["File Name"] = filename
         data["Date"] = datetime.now().strftime('%Y-%m-%d')
         data["Company"] = username.upper()
-        
         return data
-
     except Exception as e:
         return {"File Name": filename, "Item Name": "Error", "Material": "Other", "Weight (kg)": 0, "bad_tax": 0, "good_tax": 0, "savings": 0}
 
@@ -173,27 +160,45 @@ if 'batch_results' not in st.session_state:
 # 1️⃣ 로그인 화면
 if not st.session_state['logged_in']:
     st.title("🔒 기업 회원 로그인")
-    st.caption("구글 시트에 등록된 계정으로 로그인하세요.") # 안내 문구 추가
+    st.caption("구글 시트에 등록된 계정으로 로그인하세요.")
     
     with st.form("login_form"):
-        username = st.text_input("아이디")
-        password = st.text_input("비밀번호", type="password")
+        username = st.text_input("아이디").strip()
+        password = st.text_input("비밀번호", type="password").strip()
         submit = st.form_submit_button("로그인")
         
         if submit:
-            # 여기서 엑셀 장부를 확인합니다!
-            if username in CLIENT_DB and str(CLIENT_DB[username]) == str(password):
-                st.session_state['logged_in'] = True
-                st.session_state['username'] = username
-                st.rerun()
+            # 장부에서 유저 찾기 (active == 'o' 인 사람만)
+            if not user_df.empty:
+                match = user_df[(user_df['username'] == username) & 
+                                (user_df['password'].astype(str) == password) & 
+                                (user_df['active'] == 'o')]
+                
+                if not match.empty:
+                    st.session_state['logged_in'] = True
+                    st.session_state['username'] = username
+                    st.rerun()
+                else:
+                    st.error("아이디/비번이 틀리거나 승인되지 않은 계정입니다.")
             else:
-                st.error("아이디가 없거나, 비밀번호가 틀렸거나, 사용 승인이 안 된 계정입니다.")
+                st.error("시스템 장부 로딩 실패 (관리자 문의)")
 
 # 2️⃣ 메인 대시보드
 else:
+    # 현재 로그인한 유저의 크레딧 정보 가져오기
+    current_user_info = user_df[user_df['username'] == st.session_state['username']].iloc[0]
+    user_credits = int(current_user_info['credits'])
+
     with st.sidebar:
         st.write(f"👤 **{st.session_state['username'].upper()}** 님")
-        st.success("Global Enterprise Plan")
+        
+        # 🪙 크레딧 표시 (핵심 기능)
+        if user_credits > 0:
+            st.success(f"🪙 남은 크레딧: **{user_credits}**회")
+        else:
+            st.error("❌ 크레딧 부족 (충전 필요)")
+            st.info("입금처: 국민은행 000-000-000")
+
         if st.button("로그아웃"):
             st.session_state['logged_in'] = False
             st.session_state['batch_results'] = None
@@ -204,36 +209,49 @@ else:
 
     uploaded_files = st.file_uploader("파일 일괄 업로드", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
+    # 파일이 바뀌면 결과 초기화
     if uploaded_files:
         if st.session_state['batch_results'] and len(uploaded_files) != len(st.session_state['batch_results']):
              st.session_state['batch_results'] = None
 
     if uploaded_files and len(uploaded_files) > 0:
-        if st.button(f"🚀 {len(uploaded_files)}건 판독 시작"):
-            progress_bar = st.progress(0)
-            all_results = []
-            
-            for i, file in enumerate(uploaded_files):
-                file.seek(0)
-                with st.spinner(f"{file.name} 분석 중..."):
-                    res = analyze_image(file.read(), file.name, st.session_state['username'])
-                    mapped = {
-                        "Date": res.get("Date"),
-                        "Company": res.get("Company"),
-                        "File Name": res.get("File Name"),
-                        "Item Name": res.get("item"),
-                        "Material": res.get("material_display"),
-                        "Weight (kg)": res.get("weight"),
-                        "Default Tax (KRW)": res.get("bad_tax"),
-                        "Optimized Tax (KRW)": res.get("good_tax"),
-                        "Savings (KRW)": res.get("savings")
-                    }
-                    all_results.append(mapped)
-                progress_bar.progress((i + 1) / len(uploaded_files))
-            
-            st.session_state['batch_results'] = all_results
-            st.rerun()
+        file_count = len(uploaded_files)
+        
+        # 🚨 크레딧 검사 로직 (돈 없으면 버튼 못 누름)
+        if user_credits < file_count:
+            st.warning(f"⚠️ 현재 잔여 크레딧({user_credits}회)이 부족합니다. (필요: {file_count}회)")
+            st.error("관리자에게 충전을 요청하세요.")
+        else:
+            # 크레딧이 충분할 때만 버튼이 보임
+            if st.button(f"🚀 {file_count}건 판독 시작 (차감 예정: {file_count}회)"):
+                progress_bar = st.progress(0)
+                all_results = []
+                
+                for i, file in enumerate(uploaded_files):
+                    file.seek(0)
+                    with st.spinner(f"{file.name} 분석 중..."):
+                        res = analyze_image(file.read(), file.name, st.session_state['username'])
+                        mapped = {
+                            "Date": res.get("Date"),
+                            "Company": res.get("Company"),
+                            "File Name": res.get("File Name"),
+                            "Item Name": res.get("item"),
+                            "Material": res.get("material_display"),
+                            "Weight (kg)": res.get("weight"),
+                            "Default Tax (KRW)": res.get("bad_tax"),
+                            "Optimized Tax (KRW)": res.get("good_tax"),
+                            "Savings (KRW)": res.get("savings")
+                        }
+                        all_results.append(mapped)
+                    progress_bar.progress((i + 1) / len(uploaded_files))
+                
+                st.session_state['batch_results'] = all_results
+                
+                # 안내 메시지 (수동 차감 알림)
+                st.toast(f"판독 완료! 관리자가 확인 후 {file_count} 크레딧을 차감합니다.")
+                st.rerun()
 
+    # 결과 리포트 (기존과 동일)
     if st.session_state['batch_results']:
         st.divider()
         st.subheader("📝 판독 결과 (수정 가능)")
