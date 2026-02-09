@@ -56,30 +56,37 @@ def load_user_data():
         return pd.DataFrame()
 
 # ------------------------------------
-# 2️⃣ CBAM 규정 데이터 로드 함수 (진단 모드)
+# 2️⃣ CBAM 규정 데이터 로드 함수 (헤더 밀림 현상 완벽 해결)
 # ------------------------------------
-# 🚨 [진단 1] 캐시 기능 잠시 끔 (무조건 새로 읽어오게 설정)
-# @st.cache_data(ttl=300) 
+@st.cache_data(ttl=300) 
 def load_cbam_db():
     try:
-        # 데이터 읽기
+        # 1. 데이터 읽기
         df = pd.read_csv(CBAM_DATA_URL)
-        df.columns = df.columns.str.strip().str.lower()
         
-        # 🚨 [진단 2] 화면 맨 위에 가져온 데이터를 강제로 보여줌 (확인 후 삭제하세요)
-        st.error("👇 [진단 모드 작동 중] 구글 시트에서 읽어온 데이터입니다. 'exchange_rate' 값이 1738인지 확인하세요.")
-        st.dataframe(df) # 엑셀 표가 화면에 뜹니다!
-
+        # 🚨 [핵심 수정] 첫 번째 줄이 제목인데 데이터로 읽혔을 경우를 강제로 고침
+        # (화면에서 0번 줄에 'category'가 보이는 현상 해결)
+        first_cell = str(df.iloc[0,0]).strip().lower()
+        if 'category' not in df.columns.str.lower() and first_cell == 'category':
+            new_header = df.iloc[0] # 0번 줄을 제목으로 승격
+            df = df[1:] # 0번 줄을 데이터에서 제외
+            df.columns = new_header # 제목 설정
+            
+        # 2. 컬럼 정리 (공백 제거, 소문자 변환)
+        df.columns = df.columns.astype(str).str.strip().str.lower()
+        
         db = {}
         for _, row in df.iterrows():
+            # 데이터가 비어있거나 이상한 줄은 건너뜀
+            if pd.isna(row.get('category')): continue
+            
             cat = str(row['category']).strip()
             
-            # 환율 컬럼 확인
-            if 'exchange_rate' in df.columns:
+            # 환율 가져오기 (없으면 1450)
+            try:
                 rate = float(row.get('exchange_rate', 1450.0))
-            else:
-                st.warning(f"⚠️ 경고: 시트에 'exchange_rate' 컬럼이 없습니다! (현재 컬럼: {list(df.columns)})")
-                rate = 1450.0 # 컬럼 없으면 기본값
+            except:
+                rate = 1450.0
 
             db[cat] = {
                 "default": float(row.get('default', 0)),
@@ -88,6 +95,15 @@ def load_cbam_db():
                 "price": 85.0,
                 "exchange_rate": rate 
             }
+        return db
+    except Exception as e:
+        print(f"⚠️ 규정 데이터 로드 실패: {e}")
+        # 비상용 기본값
+        return {
+            "Iron/Steel": {"default": 2.5, "optimized": 0.5, "hs_code": "731800", "price": 85.0, "exchange_rate": 1450.0},
+            "Aluminum": {"default": 8.0, "optimized": 1.5, "hs_code": "760400", "price": 85.0, "exchange_rate": 1450.0},
+            "Other": {"default": 0.0, "optimized": 0.0, "hs_code": "000000", "price": 0.0, "exchange_rate": 1450.0}
+        }
         return db
     except Exception as e:
         st.error(f"🚨 데이터 로드 중 에러 발생: {e}")
@@ -446,5 +462,6 @@ else:
         if st.button("🔄 초기화"):
             st.session_state['batch_results'] = None
             st.rerun()
+
 
 
