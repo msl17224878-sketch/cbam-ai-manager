@@ -90,10 +90,15 @@ def load_cbam_db():
             cat = str(row['category']).strip()
             try: rate = float(row.get('exchange_rate', 1450.0))
             except: rate = 1450.0
+            
+            # 🚨 [중요] DB에서 HS Code 읽어오기 (없으면 000000)
+            raw_hs = str(row.get('hs_code', '000000')).strip()
+            if raw_hs == 'nan' or raw_hs == '': raw_hs = '000000'
+            
             db[cat] = {
                 "default": float(row.get('default', 0)), 
                 "optimized": float(row.get('optimized', 0)), 
-                "hs_code": str(row.get('hs_code', '000000')).split('.')[0], 
+                "hs_code": raw_hs.split('.')[0], 
                 "price": 85.0, 
                 "exchange_rate": rate
             }
@@ -115,18 +120,15 @@ def force_match_material(ai_item_name, ai_material, db_keys):
     if "bolt" in name_lower or "screw" in name_lower:
         found = [k for k in db_keys if "Bolt" in k or "Screw" in k]
         if found: return found[0]
-        
     if "aluminum" in name_lower or "aluminium" in name_lower:
         found = [k for k in db_keys if "Aluminum" in k]
         if "ingot" in name_lower:
             ingot_found = [k for k in db_keys if "Ingot" in k]
             if ingot_found: return ingot_found[0]
         if found: return found[0]
-        
     if "sheet" in name_lower or "plate" in name_lower:
         found = [k for k in db_keys if "Sheet" in k or "Plate" in k]
         if found: return found[0]
-
     if "cement" in name_lower or "cmnt" in name_lower:
         found = [k for k in db_keys if "cement" in k.lower()]
         if found: return found[0]
@@ -213,13 +215,14 @@ def analyze_image(image_bytes, filename, username):
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     try:
         cats_str = ", ".join(list(CBAM_DB.keys()))
+        # 🚨 [Prompt 강화] HS Code 반드시 찾아내라고 명령
         response = client.chat.completions.create(
             model="gpt-4o", 
             temperature=0.0, 
             messages=[
                 {
                     "role": "system", 
-                    "content": f"You are a CBAM expert. Identify ALL distinct items. For each item, select the Material Category STRICTLY from this list: [{cats_str}]. If unsure, use 'Other'. Extract 'Net Weight' in kg. Return JSON: {{'items': [{{'item': 'Item Name', 'material': 'Selected Category', 'weight': 1000, 'hs_code': '000000'}}, ...]}}."
+                    "content": f"You are a CBAM expert. Identify ALL distinct items. For each item, select the Material Category STRICTLY from this list: [{cats_str}]. If unsure, use 'Other'. Extract 'Net Weight' in kg. Extract 'HS Code' (or H.S. Code, Commodity Code) if visible (numbers only). Return JSON: {{'items': [{{'item': 'Item Name', 'material': 'Selected Category', 'weight': 1000, 'hs_code': '731800'}}, ...]}}."
                 },
                 {
                     "role": "user", 
@@ -240,8 +243,15 @@ def analyze_image(image_bytes, filename, username):
             w = safe_float(item.get('weight', 0))
             raw_item_name = item.get('item', '')
             raw_material = item.get('material', 'Other')
+            
+            # AI가 읽은 HS Code
+            ai_hs_code = str(item.get('hs_code', '')).replace('.', '').strip()
+            
             corrected_mat = force_match_material(raw_item_name, raw_material, list(CBAM_DB.keys()))
             calc = calculate_tax_logic(corrected_mat, w)
+            
+            # 🚨 [핵심] AI가 읽은 HS코드가 있으면 그걸 쓰고, 없으면 DB값 씀
+            final_hs_code = ai_hs_code if (ai_hs_code and ai_hs_code != '000000') else calc['hs_code']
             
             processed_items.append({
                 "File Name": filename,
@@ -250,7 +260,7 @@ def analyze_image(image_bytes, filename, username):
                 "Item Name": raw_item_name,
                 "Material": corrected_mat,
                 "Weight (kg)": w,
-                "HS Code": item.get('hs_code', calc['hs_code']),
+                "HS Code": final_hs_code, # 여기서 결정된 값 사용
                 "Default Tax (KRW)": calc['bad_tax'],
                 "exchange_rate": calc['exchange_rate']
             })
@@ -266,37 +276,30 @@ def analyze_image(image_bytes, filename, username):
         }]
 
 # ==========================================
-# 🚀 [핵심] 분석 처리 콜백 함수 (버튼 누르면 이것부터 실행됨)
+# 🚀 분석 처리 콜백
 # ==========================================
 def process_analysis():
-    # 1. 파일이 있는지 확인 (st.session_state.upl_files 사용)
     uploaded_files = st.session_state.get('upl_files', [])
     
     if uploaded_files:
-        # 2. 크레딧 체크
         current_credits = st.session_state.get('credits', 0)
         required_credits = len(uploaded_files)
         is_unlimited = current_credits >= 999999
         
         if is_unlimited or (current_credits >= required_credits):
-            # 3. 새로운 Run ID 발급 (화면 갱신용)
             st.session_state['run_id'] = str(uuid.uuid4())
             
-            # 4. 분석 시작 (Spinner 표시)
             with st.spinner("AI가 정밀 분석 중입니다... 잠시만 기다려주세요."):
                 all_results = []
                 for i, file in enumerate(uploaded_files):
-                    # 파일 커서를 처음으로 돌림 (중요!)
                     file.seek(0)
                     items = analyze_image(file.read(), file.name, st.session_state['username'])
                     if isinstance(items, list): all_results.extend(items)
                     else: all_results.append(items)
                 
-                # 5. 결과 저장 (Session State에 저장)
                 st.session_state['batch_results'] = all_results
                 st.session_state['history_db'].extend(all_results)
                 
-                # 6. 크레딧 차감
                 if not is_unlimited:
                     st.session_state['credits'] -= required_credits
                     st.toast(f"💳 {required_credits} 크레딧 차감 완료")
@@ -364,14 +367,10 @@ else:
         st.info(f"💶 **실시간 환율 적용 중:** 1 EUR = **{krw_rate:,.2f} KRW** (Google Finance 연동)")
 
         with st.container(border=True):
-            # 🚨 [중요] key="upl_files" 지정 (콜백에서 접근하기 위해)
             uploaded_files = st.file_uploader("파일 추가 (Drag & Drop)", type=["jpg", "png", "jpeg"], accept_multiple_files=True, key="upl_files")
-            
             if uploaded_files:
-                # 🚨 [중요] on_click=process_analysis (버튼 누르면 콜백 함수 실행)
                 st.button(f"🚀 AI 분석 시작", type="primary", on_click=process_analysis)
 
-        # 결과 표시 (batch_results에 값이 있으면 표시)
         if st.session_state['batch_results']:
             st.divider()
             st.subheader("📊 금회 분석 결과")
