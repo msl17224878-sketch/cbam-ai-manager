@@ -6,7 +6,7 @@ import io
 from openai import OpenAI
 from datetime import datetime
 import difflib 
-import uuid # 🚨 [추가] 고유 ID 생성을 위한 도구
+import uuid
 
 # ==========================================
 # 🎨 [UI 설정]
@@ -27,6 +27,21 @@ st.markdown("""
         font-size: 24px;
         color: #004494;
         font-weight: bold;
+    }
+    /* 탭 스타일 꾸미기 */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #f0f2f6;
+        border-radius: 4px 4px 0px 0px;
+        font-weight: bold;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #004494;
+        color: white;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -97,14 +112,12 @@ def force_match_material(ai_item_name, ai_material, db_keys):
     name_lower = str(ai_item_name).lower()
     mat_lower = str(ai_material).lower()
     
-    # 1. 키워드 검사 (강력 매칭)
     if "bolt" in name_lower or "screw" in name_lower:
         found = [k for k in db_keys if "Bolt" in k or "Screw" in k]
         if found: return found[0]
         
     if "aluminum" in name_lower or "aluminium" in name_lower:
         found = [k for k in db_keys if "Aluminum" in k]
-        # Ingot 우선 처리
         if "ingot" in name_lower:
             ingot_found = [k for k in db_keys if "Ingot" in k]
             if ingot_found: return ingot_found[0]
@@ -114,15 +127,12 @@ def force_match_material(ai_item_name, ai_material, db_keys):
         found = [k for k in db_keys if "Sheet" in k or "Plate" in k]
         if found: return found[0]
 
-    # Cement 추가
     if "cement" in name_lower or "cmnt" in name_lower:
         found = [k for k in db_keys if "cement" in k.lower()]
         if found: return found[0]
 
-    # 2. 유사도 매칭
     matches = difflib.get_close_matches(ai_material, db_keys, n=1, cutoff=0.4)
     if matches: return matches[0]
-    
     return "Other"
 
 # ==========================================
@@ -230,13 +240,12 @@ def analyze_image(image_bytes, filename, username):
             w = safe_float(item.get('weight', 0))
             raw_item_name = item.get('item', '')
             raw_material = item.get('material', 'Other')
-            
             corrected_mat = force_match_material(raw_item_name, raw_material, list(CBAM_DB.keys()))
             calc = calculate_tax_logic(corrected_mat, w)
             
             processed_items.append({
                 "File Name": filename,
-                "Date": datetime.now().strftime('%Y-%m-%d'),
+                "Date": datetime.now().strftime('%Y-%m-%d %H:%M'), # 시간까지 저장
                 "Company": username.upper(),
                 "Item Name": raw_item_name,
                 "Material": corrected_mat,
@@ -262,8 +271,9 @@ def analyze_image(image_bytes, filename, username):
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'batch_results' not in st.session_state: st.session_state['batch_results'] = None
-# 🚨 [추가] 실행 ID (캐시 문제 해결용)
 if 'run_id' not in st.session_state: st.session_state['run_id'] = str(uuid.uuid4())
+# 🚨 [추가] 히스토리 저장소
+if 'history_db' not in st.session_state: st.session_state['history_db'] = []
 
 if not st.session_state['logged_in']:
     c1, c2, c3 = st.columns([1, 2, 1])
@@ -294,94 +304,140 @@ else:
         current_credits = st.session_state.get('credits', 0)
         if current_credits >= 999999: st.metric("잔여 크레딧", "♾️ 무제한 (VIP)")
         else: st.metric("잔여 크레딧", f"{current_credits} 회")
+        
+        st.markdown("---")
+        # 사이드바에도 요약 정보 표시
+        history_count = len(st.session_state['history_db'])
+        st.caption(f"📝 저장된 기록: {history_count}건")
+        
         if st.button("로그아웃"):
             st.session_state['logged_in'] = False
+            st.session_state['history_db'] = [] # 로그아웃 시 기록 초기화 (보안)
             st.rerun()
 
-    st.markdown("## 🏭 대시보드 (Dashboard)")
-    if CBAM_DB: krw_rate = CBAM_DB[list(CBAM_DB.keys())[0]].get('exchange_rate', 1450)
-    else: krw_rate = 1450
-    st.info(f"💶 **실시간 환율 적용 중:** 1 EUR = **{krw_rate:,.2f} KRW** (Google Finance 연동)")
+    # 🚨 [탭 구성] 화면을 두 개로 나눔
+    tab1, tab2 = st.tabs(["🚀 분석 (Analysis)", "🕒 기록 관리 (History)"])
 
-    with st.container(border=True):
-        st.subheader("📂 인보이스 업로드 (다중 품목 인식 지원)")
-        uploaded_files = st.file_uploader("파일 추가", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
-        
-        if uploaded_files:
-            current_credits = st.session_state.get('credits', 0)
-            required_credits = len(uploaded_files)
-            is_unlimited = current_credits >= 999999
-            can_run = is_unlimited or (current_credits >= required_credits)
+    # ----------------------------------
+    # TAB 1: 기존 분석 화면
+    # ----------------------------------
+    with tab1:
+        st.markdown("### 📄 인보이스 분석")
+        if CBAM_DB: krw_rate = CBAM_DB[list(CBAM_DB.keys())[0]].get('exchange_rate', 1450)
+        else: krw_rate = 1450
+        st.info(f"💶 **실시간 환율 적용 중:** 1 EUR = **{krw_rate:,.2f} KRW** (Google Finance 연동)")
+
+        with st.container(border=True):
+            uploaded_files = st.file_uploader("파일 추가 (Drag & Drop)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
             
-            if can_run:
-                if st.button(f"🚀 AI 분석 시작", type="primary"):
-                    # 🚨 [핵심 수정] 버튼 누를 때마다 새로운 ID 발급 -> 화면 초기화
-                    st.session_state['run_id'] = str(uuid.uuid4())
+            if uploaded_files:
+                current_credits = st.session_state.get('credits', 0)
+                required_credits = len(uploaded_files)
+                is_unlimited = current_credits >= 999999
+                can_run = is_unlimited or (current_credits >= required_credits)
+                
+                if can_run:
+                    if st.button(f"🚀 AI 분석 시작", type="primary"):
+                        st.session_state['run_id'] = str(uuid.uuid4())
+                        progress_text = "AI가 정밀 분석 중입니다..."
+                        my_bar = st.progress(0, text=progress_text)
+                        all_results = []
+                        
+                        for i, file in enumerate(uploaded_files):
+                            items = analyze_image(file.read(), file.name, st.session_state['username'])
+                            if isinstance(items, list): all_results.extend(items)
+                            else: all_results.append(items)
+                            my_bar.progress((i + 1) / len(uploaded_files))
+                        
+                        st.session_state['batch_results'] = all_results
+                        # 🚨 [저장] 분석 결과를 히스토리에 자동 추가
+                        st.session_state['history_db'].extend(all_results)
+                        
+                        if not is_unlimited:
+                            st.session_state['credits'] -= required_credits
+                            st.toast(f"💳 {required_credits} 크레딧 차감 완료")
+                        st.rerun()
+                else:
+                    st.error(f"🚫 **크레딧 부족!**")
+
+        if st.session_state['batch_results']:
+            st.divider()
+            st.subheader("📊 금회 분석 결과")
+            results = st.session_state['batch_results']
+            
+            total_tax_krw = sum([r.get('Default Tax (KRW)', 0) for r in results])
+            total_weight = sum([safe_float(r.get('Weight (kg)', 0)) for r in results])
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("항목 수", f"{len(results)} 개")
+            m2.metric("총 중량", f"{total_weight:,.0f} kg")
+            m3.metric("총 세금", f"₩ {total_tax_krw:,.0f}")
+
+            mat_options = list(CBAM_DB.keys())
+            if "Other" not in mat_options: mat_options.append("Other")
+
+            updated_final_results = []
+            run_id = st.session_state['run_id']
+
+            for idx, row in enumerate(results):
+                with st.expander(f"📄 {row.get('File Name','')} - {row.get('Item Name','Unknown')} ({row.get('Weight (kg)',0)}kg)", expanded=True):
+                    c1, c2, c3 = st.columns([2, 1, 1])
+                    unique_key = f"{idx}_{run_id}"
                     
-                    progress_text = "AI가 문서 내 모든 품목을 스캔 중입니다..."
-                    my_bar = st.progress(0, text=progress_text)
-                    all_results = []
+                    curr_mat = row.get('Material', 'Other')
+                    if curr_mat not in mat_options: curr_mat = "Other"
+                    new_mat = c1.selectbox("재질", mat_options, index=mat_options.index(curr_mat), key=f"m_{unique_key}")
                     
-                    for i, file in enumerate(uploaded_files):
-                        items = analyze_image(file.read(), file.name, st.session_state['username'])
-                        if isinstance(items, list): all_results.extend(items)
-                        else: all_results.append(items)
-                        my_bar.progress((i + 1) / len(uploaded_files))
+                    curr_hs = str(row.get('HS Code', '000000'))
+                    new_hs = c2.text_input("HS Code", value=curr_hs, key=f"h_{unique_key}")
                     
-                    st.session_state['batch_results'] = all_results
-                    if not is_unlimited:
-                        st.session_state['credits'] -= required_credits
-                        st.toast(f"💳 {required_credits} 크레딧 차감 완료")
+                    curr_w = safe_float(row.get('Weight (kg)', 0))
+                    new_weight = c3.number_input("중량 (kg)", value=curr_w, key=f"w_{unique_key}")
+                    
+                    recalc = calculate_tax_logic(new_mat, new_weight)
+                    row.update({
+                        'Material': new_mat, 'HS Code': new_hs, 'Weight (kg)': new_weight, 
+                        'Default Tax (KRW)': recalc['bad_tax'], 'exchange_rate': recalc['exchange_rate']
+                    })
+                    updated_final_results.append(row)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            excel_data = generate_official_excel(updated_final_results)
+            if excel_data:
+                st.download_button("📥 엑셀 다운로드", data=excel_data, file_name=f"CBAM_Report_NOW.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
+
+    # ----------------------------------
+    # TAB 2: 히스토리 화면 (NEW)
+    # ----------------------------------
+    with tab2:
+        st.markdown("### 🕒 계산 기록 관리 (History)")
+        st.caption("로그인 유지 중에 계산한 모든 내역이 여기에 저장됩니다. (새로고침 시 초기화)")
+        
+        if len(st.session_state['history_db']) > 0:
+            # 데이터프레임으로 변환해서 보여주기
+            history_df = pd.DataFrame(st.session_state['history_db'])
+            
+            # 보기 좋게 컬럼 순서 정리
+            cols_to_show = ['Date', 'File Name', 'Item Name', 'Material', 'Weight (kg)', 'Default Tax (KRW)', 'HS Code']
+            st.dataframe(history_df[cols_to_show], use_container_width=True)
+            
+            st.divider()
+            
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                # 전체 히스토리 다운로드
+                full_excel = generate_official_excel(st.session_state['history_db'])
+                st.download_button(
+                    "📥 전체 기록 엑셀 다운로드", 
+                    data=full_excel, 
+                    file_name=f"CBAM_History_Full_{datetime.now().strftime('%Y%m%d')}.xlsx", 
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                    type="primary", 
+                    use_container_width=True
+                )
+            with c2:
+                if st.button("🗑️ 기록 초기화", type="secondary", use_container_width=True):
+                    st.session_state['history_db'] = []
                     st.rerun()
-            else:
-                st.error(f"🚫 **크레딧 부족!**")
-
-    if st.session_state['batch_results']:
-        st.divider()
-        st.subheader("📊 분석 결과 (Review)")
-        results = st.session_state['batch_results']
-        
-        total_tax_krw = sum([r.get('Default Tax (KRW)', 0) for r in results])
-        total_weight = sum([safe_float(r.get('Weight (kg)', 0)) for r in results])
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("총 항목 수", f"{len(results)} 개")
-        m2.metric("총 중량", f"{total_weight:,.0f} kg")
-        m3.metric("총 예상 세금", f"₩ {total_tax_krw:,.0f}")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        mat_options = list(CBAM_DB.keys())
-        if "Other" not in mat_options: mat_options.append("Other")
-
-        updated_final_results = []
-        run_id = st.session_state['run_id'] # 현재 실행 ID
-
-        for idx, row in enumerate(results):
-            with st.expander(f"📄 {row.get('File Name','')} - {row.get('Item Name','Unknown')} ({row.get('Weight (kg)',0)}kg)", expanded=False):
-                c1, c2, c3 = st.columns([2, 1, 1])
-                
-                curr_mat = row.get('Material', 'Other')
-                if curr_mat not in mat_options: curr_mat = "Other"
-                
-                # 🚨 [핵심 수정] key 값에 run_id를 붙여서 매번 새로운 입력창인 것처럼 속임
-                unique_key = f"{idx}_{run_id}"
-                
-                new_mat = c1.selectbox("재질", mat_options, index=mat_options.index(curr_mat), key=f"m_{unique_key}")
-                
-                curr_hs = str(row.get('HS Code', '000000'))
-                new_hs = c2.text_input("HS Code", value=curr_hs, key=f"h_{unique_key}")
-                
-                curr_w = safe_float(row.get('Weight (kg)', 0))
-                new_weight = c3.number_input("중량 (kg)", value=curr_w, key=f"w_{unique_key}")
-                
-                recalc = calculate_tax_logic(new_mat, new_weight)
-                row.update({
-                    'Material': new_mat, 'HS Code': new_hs, 'Weight (kg)': new_weight, 
-                    'Default Tax (KRW)': recalc['bad_tax'], 'exchange_rate': recalc['exchange_rate']
-                })
-                updated_final_results.append(row)
-
-        st.divider()
-        excel_data = generate_official_excel(updated_final_results)
-        if excel_data:
-            st.download_button("📥 엑셀 리포트 다운로드", data=excel_data, file_name=f"CBAM_Report_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
+        else:
+            st.info("📭 아직 계산된 기록이 없습니다. '분석' 탭에서 인보이스를 올려보세요!")
