@@ -266,6 +266,46 @@ def analyze_image(image_bytes, filename, username):
         }]
 
 # ==========================================
+# 🚀 [핵심] 분석 처리 콜백 함수 (버튼 누르면 이것부터 실행됨)
+# ==========================================
+def process_analysis():
+    # 1. 파일이 있는지 확인 (st.session_state.upl_files 사용)
+    uploaded_files = st.session_state.get('upl_files', [])
+    
+    if uploaded_files:
+        # 2. 크레딧 체크
+        current_credits = st.session_state.get('credits', 0)
+        required_credits = len(uploaded_files)
+        is_unlimited = current_credits >= 999999
+        
+        if is_unlimited or (current_credits >= required_credits):
+            # 3. 새로운 Run ID 발급 (화면 갱신용)
+            st.session_state['run_id'] = str(uuid.uuid4())
+            
+            # 4. 분석 시작 (Spinner 표시)
+            with st.spinner("AI가 정밀 분석 중입니다... 잠시만 기다려주세요."):
+                all_results = []
+                for i, file in enumerate(uploaded_files):
+                    # 파일 커서를 처음으로 돌림 (중요!)
+                    file.seek(0)
+                    items = analyze_image(file.read(), file.name, st.session_state['username'])
+                    if isinstance(items, list): all_results.extend(items)
+                    else: all_results.append(items)
+                
+                # 5. 결과 저장 (Session State에 저장)
+                st.session_state['batch_results'] = all_results
+                st.session_state['history_db'].extend(all_results)
+                
+                # 6. 크레딧 차감
+                if not is_unlimited:
+                    st.session_state['credits'] -= required_credits
+                    st.toast(f"💳 {required_credits} 크레딧 차감 완료")
+                else:
+                    st.toast("✅ 분석 완료!")
+        else:
+            st.error(f"🚫 크레딧 부족!")
+
+# ==========================================
 # 🖥️ 화면 구성
 # ==========================================
 
@@ -304,7 +344,6 @@ else:
         if current_credits >= 999999: st.metric("잔여 크레딧", "♾️ 무제한 (VIP)")
         else: st.metric("잔여 크레딧", f"{current_credits} 회")
         
-        # 사이드바 기록 수 표시 (즉시 갱신 안되어도 안전하게)
         hist_len = len(st.session_state['history_db'])
         st.caption(f"📝 저장된 기록: {hist_len}건")
         
@@ -325,44 +364,14 @@ else:
         st.info(f"💶 **실시간 환율 적용 중:** 1 EUR = **{krw_rate:,.2f} KRW** (Google Finance 연동)")
 
         with st.container(border=True):
-            uploaded_files = st.file_uploader("파일 추가 (Drag & Drop)", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+            # 🚨 [중요] key="upl_files" 지정 (콜백에서 접근하기 위해)
+            uploaded_files = st.file_uploader("파일 추가 (Drag & Drop)", type=["jpg", "png", "jpeg"], accept_multiple_files=True, key="upl_files")
             
             if uploaded_files:
-                current_credits = st.session_state.get('credits', 0)
-                required_credits = len(uploaded_files)
-                is_unlimited = current_credits >= 999999
-                can_run = is_unlimited or (current_credits >= required_credits)
-                
-                if can_run:
-                    # 🚨 [해결] st.rerun 제거, progress 바 사용 (가장 안정적)
-                    if st.button(f"🚀 AI 분석 시작", type="primary"):
-                        st.session_state['run_id'] = str(uuid.uuid4())
-                        
-                        progress_text = "AI가 정밀 분석 중입니다..."
-                        my_bar = st.progress(0, text=progress_text)
-                        
-                        all_results = []
-                        for i, file in enumerate(uploaded_files):
-                            items = analyze_image(file.read(), file.name, st.session_state['username'])
-                            if isinstance(items, list): all_results.extend(items)
-                            else: all_results.append(items)
-                            my_bar.progress((i + 1) / len(uploaded_files))
-                        
-                        st.session_state['batch_results'] = all_results
-                        st.session_state['history_db'].extend(all_results)
-                        
-                        if not is_unlimited:
-                            st.session_state['credits'] -= required_credits
-                            st.toast(f"💳 {required_credits} 크레딧 차감 완료")
-                        else:
-                            st.toast("✅ 분석 완료!")
-                            
-                        # 일부러 rerun을 뺐습니다. (흐름상 아래 코드가 자연스럽게 실행됩니다)
+                # 🚨 [중요] on_click=process_analysis (버튼 누르면 콜백 함수 실행)
+                st.button(f"🚀 AI 분석 시작", type="primary", on_click=process_analysis)
 
-                else:
-                    st.error(f"🚫 **크레딧 부족!**")
-
-        # 결과 표시 (batch_results에 값이 있으면 무조건 표시됨)
+        # 결과 표시 (batch_results에 값이 있으면 표시)
         if st.session_state['batch_results']:
             st.divider()
             st.subheader("📊 금회 분석 결과")
@@ -418,7 +427,6 @@ else:
         
         if len(st.session_state['history_db']) > 0:
             history_df = pd.DataFrame(st.session_state['history_db'])
-            # 보기 좋게 컬럼 선택
             cols_to_show = ['Date', 'File Name', 'Item Name', 'Material', 'Weight (kg)', 'Default Tax (KRW)', 'HS Code']
             st.dataframe(history_df[cols_to_show], use_container_width=True)
             
