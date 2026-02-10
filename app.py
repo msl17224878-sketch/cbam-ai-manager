@@ -28,7 +28,6 @@ st.markdown("""
         color: #004494;
         font-weight: bold;
     }
-    /* 탭 스타일 꾸미기 */
     .stTabs [data-baseweb="tab-list"] {
         gap: 10px;
     }
@@ -245,7 +244,7 @@ def analyze_image(image_bytes, filename, username):
             
             processed_items.append({
                 "File Name": filename,
-                "Date": datetime.now().strftime('%Y-%m-%d %H:%M'), # 시간까지 저장
+                "Date": datetime.now().strftime('%Y-%m-%d %H:%M'),
                 "Company": username.upper(),
                 "Item Name": raw_item_name,
                 "Material": corrected_mat,
@@ -272,7 +271,6 @@ def analyze_image(image_bytes, filename, username):
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'batch_results' not in st.session_state: st.session_state['batch_results'] = None
 if 'run_id' not in st.session_state: st.session_state['run_id'] = str(uuid.uuid4())
-# 🚨 [추가] 히스토리 저장소
 if 'history_db' not in st.session_state: st.session_state['history_db'] = []
 
 if not st.session_state['logged_in']:
@@ -304,22 +302,17 @@ else:
         current_credits = st.session_state.get('credits', 0)
         if current_credits >= 999999: st.metric("잔여 크레딧", "♾️ 무제한 (VIP)")
         else: st.metric("잔여 크레딧", f"{current_credits} 회")
-        
-        st.markdown("---")
-        # 사이드바에도 요약 정보 표시
-        history_count = len(st.session_state['history_db'])
-        st.caption(f"📝 저장된 기록: {history_count}건")
+        st.caption(f"📝 저장된 기록: {len(st.session_state['history_db'])}건")
         
         if st.button("로그아웃"):
             st.session_state['logged_in'] = False
-            st.session_state['history_db'] = [] # 로그아웃 시 기록 초기화 (보안)
+            st.session_state['history_db'] = [] 
             st.rerun()
 
-    # 🚨 [탭 구성] 화면을 두 개로 나눔
     tab1, tab2 = st.tabs(["🚀 분석 (Analysis)", "🕒 기록 관리 (History)"])
 
     # ----------------------------------
-    # TAB 1: 기존 분석 화면
+    # TAB 1: 분석 화면
     # ----------------------------------
     with tab1:
         st.markdown("### 📄 인보이스 분석")
@@ -338,7 +331,8 @@ else:
                 
                 if can_run:
                     if st.button(f"🚀 AI 분석 시작", type="primary"):
-                        st.session_state['run_id'] = str(uuid.uuid4())
+                        st.session_state['run_id'] = str(uuid.uuid4()) # 새 작업 ID 발급
+                        
                         progress_text = "AI가 정밀 분석 중입니다..."
                         my_bar = st.progress(0, text=progress_text)
                         all_results = []
@@ -349,17 +343,23 @@ else:
                             else: all_results.append(items)
                             my_bar.progress((i + 1) / len(uploaded_files))
                         
+                        # 1. 결과 저장
                         st.session_state['batch_results'] = all_results
-                        # 🚨 [저장] 분석 결과를 히스토리에 자동 추가
                         st.session_state['history_db'].extend(all_results)
                         
+                        # 2. 크레딧 차감
                         if not is_unlimited:
                             st.session_state['credits'] -= required_credits
                             st.toast(f"💳 {required_credits} 크레딧 차감 완료")
-                        st.rerun()
+                        else:
+                            st.toast("✅ 분석이 완료되었습니다!")
+
+                        # 🚨 [수정] st.rerun() 삭제! -> 이제 버튼 누르면 바로 밑에 결과가 뜹니다.
+
                 else:
                     st.error(f"🚫 **크레딧 부족!**")
 
+        # 결과 표시 (버튼 눌러서 batch_results가 채워지면 바로 실행됨)
         if st.session_state['batch_results']:
             st.divider()
             st.subheader("📊 금회 분석 결과")
@@ -407,37 +407,25 @@ else:
                 st.download_button("📥 엑셀 다운로드", data=excel_data, file_name=f"CBAM_Report_NOW.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
 
     # ----------------------------------
-    # TAB 2: 히스토리 화면 (NEW)
+    # TAB 2: 히스토리 화면
     # ----------------------------------
     with tab2:
         st.markdown("### 🕒 계산 기록 관리 (History)")
-        st.caption("로그인 유지 중에 계산한 모든 내역이 여기에 저장됩니다. (새로고침 시 초기화)")
+        st.caption("로그인 유지 중에 계산한 모든 내역이 여기에 저장됩니다.")
         
         if len(st.session_state['history_db']) > 0:
-            # 데이터프레임으로 변환해서 보여주기
             history_df = pd.DataFrame(st.session_state['history_db'])
-            
-            # 보기 좋게 컬럼 순서 정리
             cols_to_show = ['Date', 'File Name', 'Item Name', 'Material', 'Weight (kg)', 'Default Tax (KRW)', 'HS Code']
             st.dataframe(history_df[cols_to_show], use_container_width=True)
             
             st.divider()
-            
             c1, c2 = st.columns([1, 1])
             with c1:
-                # 전체 히스토리 다운로드
                 full_excel = generate_official_excel(st.session_state['history_db'])
-                st.download_button(
-                    "📥 전체 기록 엑셀 다운로드", 
-                    data=full_excel, 
-                    file_name=f"CBAM_History_Full_{datetime.now().strftime('%Y%m%d')}.xlsx", 
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-                    type="primary", 
-                    use_container_width=True
-                )
+                st.download_button("📥 전체 기록 엑셀 다운로드", data=full_excel, file_name=f"CBAM_History_Full.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
             with c2:
-                if st.button("🗑️ 기록 초기화", type="secondary", use_container_width=True):
+                if st.button("🗑️ 기록 초기화"):
                     st.session_state['history_db'] = []
                     st.rerun()
         else:
-            st.info("📭 아직 계산된 기록이 없습니다. '분석' 탭에서 인보이스를 올려보세요!")
+            st.info("📭 아직 계산된 기록이 없습니다.")
