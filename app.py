@@ -145,6 +145,36 @@ def load_user_data():
 
 @st.cache_data(ttl=300) 
 def load_cbam_db():
+    # 🚨 [1. 전체 품목 표준 DB 정의] (구글 시트가 없을 때를 대비한 안전망)
+    # 여기에 없는 품목은 세상에 없다고 봐도 됩니다.
+    master_db = {
+        # 철강 (Iron & Steel)
+        "Steel (Bolts/Screws)": {"default": 2.34, "optimized": 1.5, "hs_code": "731800", "price": 85.0, "exchange_rate": 1450},
+        "Steel (Sheets/Plates)": {"default": 2.21, "optimized": 1.8, "hs_code": "720800", "price": 85.0, "exchange_rate": 1450},
+        "Steel (Pipes/Tubes)": {"default": 2.50, "optimized": 1.9, "hs_code": "730400", "price": 85.0, "exchange_rate": 1450},
+        "Steel (Wire)": {"default": 2.20, "optimized": 1.6, "hs_code": "721700", "price": 85.0, "exchange_rate": 1450},
+        "Steel (Bars/Rods)": {"default": 1.85, "optimized": 1.2, "hs_code": "721400", "price": 85.0, "exchange_rate": 1450},
+        "Steel (Structures)": {"default": 2.10, "optimized": 1.5, "hs_code": "730800", "price": 85.0, "exchange_rate": 1450},
+        "Steel (Fittings)": {"default": 2.40, "optimized": 1.7, "hs_code": "730700", "price": 85.0, "exchange_rate": 1450},
+        
+        # 알루미늄 (Aluminum)
+        "Aluminum (Ingots)": {"default": 12.50, "optimized": 8.5, "hs_code": "760100", "price": 85.0, "exchange_rate": 1450},
+        "Aluminum (Bars/Rods)": {"default": 8.63, "optimized": 5.2, "hs_code": "760400", "price": 85.0, "exchange_rate": 1450},
+        "Aluminum (Sheets/Plates)": {"default": 9.20, "optimized": 6.0, "hs_code": "760600", "price": 85.0, "exchange_rate": 1450},
+        "Aluminum (Foil)": {"default": 9.50, "optimized": 6.5, "hs_code": "760700", "price": 85.0, "exchange_rate": 1450},
+        "Aluminum (Pipes/Tubes)": {"default": 8.90, "optimized": 5.8, "hs_code": "760800", "price": 85.0, "exchange_rate": 1450},
+        "Aluminum (Structures)": {"default": 9.10, "optimized": 6.2, "hs_code": "761000", "price": 85.0, "exchange_rate": 1450},
+
+        # 시멘트 (Cement)
+        "Cement": {"default": 0.86, "optimized": 0.6, "hs_code": "252300", "price": 85.0, "exchange_rate": 1450},
+        "Cement (Clinker)": {"default": 0.90, "optimized": 0.7, "hs_code": "252310", "price": 85.0, "exchange_rate": 1450},
+
+        # 비료 & 수소 (Fertilizer & Hydrogen) - 확장 대비
+        "Fertilizer (Nitric Acid)": {"default": 1.50, "optimized": 1.0, "hs_code": "280800", "price": 85.0, "exchange_rate": 1450},
+        "Hydrogen": {"default": 8.00, "optimized": 5.0, "hs_code": "280410", "price": 85.0, "exchange_rate": 1450},
+    }
+
+    # 🚨 [2. 구글 시트 연동] 시트 내용으로 덮어쓰기 (업데이트 우선권)
     try:
         df = pd.read_csv(CBAM_DATA_URL)
         first_cell = str(df.iloc[0,0]).strip().lower()
@@ -154,26 +184,33 @@ def load_cbam_db():
             df.columns = new_header
         df.columns = df.columns.astype(str).str.strip().str.lower()
         
-        db = {}
         for _, row in df.iterrows():
             if pd.isna(row.get('category')): continue
             cat = str(row['category']).strip()
+            
+            # 시트에 있는 값들 가져오기
             try: rate = float(row.get('exchange_rate', 1450.0))
             except: rate = 1450.0
             
             raw_hs = str(row.get('hs_code', '000000')).strip()
             if raw_hs == 'nan' or raw_hs == '': raw_hs = '000000'
             
-            db[cat] = {
-                "default": float(row.get('default', 0)), 
-                "optimized": float(row.get('optimized', 0)), 
+            default_val = float(row.get('default', 0))
+            optimized_val = float(row.get('optimized', 0))
+
+            # Master DB 업데이트 (시트 값이 있으면 덮어씀)
+            master_db[cat] = {
+                "default": default_val, 
+                "optimized": optimized_val, 
                 "hs_code": raw_hs.split('.')[0], 
                 "price": 85.0, 
                 "exchange_rate": rate
             }
-        return db
-    except:
-        return {}
+    except Exception as e:
+        # 시트 로드 실패해도 master_db가 있으니 안심
+        pass 
+    
+    return master_db
 
 user_df = load_user_data()
 CBAM_DB = load_cbam_db()
@@ -186,18 +223,51 @@ def force_match_material(ai_item_name, ai_material, db_keys):
     name_lower = str(ai_item_name).lower()
     mat_lower = str(ai_material).lower()
     
-    if "bolt" in name_lower or "screw" in name_lower:
+    # 🚨 [매칭 로직] DB에 있는 모든 키를 대상으로 검색
+    # 1. 파이프/튜브
+    if "pipe" in name_lower or "tube" in name_lower:
+        found = [k for k in db_keys if "Pipes" in k]
+        if found: 
+             if "stainless" in name_lower or "steel" in name_lower or "iron" in name_lower:
+                 return "Steel (Pipes/Tubes)"
+             if "alum" in name_lower:
+                 return "Aluminum (Pipes/Tubes)"
+             return found[0]
+
+    # 2. 와이어/케이블
+    if "wire" in name_lower or "cable" in name_lower:
+        found = [k for k in db_keys if "Wire" in k]
+        if found: return found[0] # Steel (Wire)
+
+    # 3. 구조물
+    if "structure" in name_lower or "beam" in name_lower:
+        found = [k for k in db_keys if "Structures" in k]
+        if found: return found[0]
+
+    # 4. 볼트/너트
+    if "bolt" in name_lower or "screw" in name_lower or "nut" in name_lower or "washer" in name_lower:
         found = [k for k in db_keys if "Bolt" in k or "Screw" in k]
         if found: return found[0]
+
+    # 5. 알루미늄
     if "aluminum" in name_lower or "aluminium" in name_lower:
         found = [k for k in db_keys if "Aluminum" in k]
         if "ingot" in name_lower:
-            ingot_found = [k for k in db_keys if "Ingot" in k]
-            if ingot_found: return ingot_found[0]
-        if found: return found[0]
-    if "sheet" in name_lower or "plate" in name_lower:
+             return "Aluminum (Ingots)"
+        if "bar" in name_lower or "rod" in name_lower:
+             return "Aluminum (Bars/Rods)"
+        if "foil" in name_lower:
+             return "Aluminum (Foil)"
+        if found: return found[0] # Default Aluminum
+
+    # 6. 철판/시트
+    if "sheet" in name_lower or "plate" in name_lower or "coil" in name_lower:
         found = [k for k in db_keys if "Sheet" in k or "Plate" in k]
+        if "alum" in name_lower:
+             return "Aluminum (Sheets/Plates)"
         if found: return found[0]
+
+    # 7. 시멘트
     if "cement" in name_lower or "cmnt" in name_lower:
         found = [k for k in db_keys if "cement" in k.lower()]
         if found: return found[0]
@@ -210,9 +280,12 @@ def force_match_material(ai_item_name, ai_material, db_keys):
 # 🧮 핵심 로직
 # ==========================================
 def calculate_tax_logic(material, weight):
-    if material in CBAM_DB: db = CBAM_DB[material]
-    elif CBAM_DB: db = CBAM_DB[list(CBAM_DB.keys())[0]]
-    else: db = {"default":0, "optimized":0, "price":0, "exchange_rate":1450}
+    # DB에 있으면 가져오고, 없으면 0
+    if material in CBAM_DB: 
+        db = CBAM_DB[material]
+    else: 
+        # 혹시라도 매칭 실패 시 기본값 (안전장치)
+        db = {"default":0, "optimized":0, "price":0, "exchange_rate":1450}
 
     if weight <= 0: weight = 0.0
     rate = db.get('exchange_rate', 1450.0)
@@ -231,7 +304,6 @@ def calculate_tax_logic(material, weight):
     }
 
 def generate_official_excel(data_list):
-    # 🚨 [수정됨] 데이터프레임(표)이 들어오면 리스트로 변환 (에러 해결 핵심!)
     if isinstance(data_list, pd.DataFrame):
         if data_list.empty: return None
         data_list = data_list.to_dict('records')
@@ -268,9 +340,13 @@ def generate_official_excel(data_list):
             r = i + 1
             w_ton = d.get('Weight (kg)', 0) / 1000
             mat = d.get('Material', 'Iron/Steel')
+            
+            # DB 정보 재확인
             factor = 0
             if mat in CBAM_DB: factor = CBAM_DB[mat].get('default', 0)
+            
             rate = d.get('exchange_rate', 1450)
+            
             ws2.write(r, 0, r)
             ws2.write(r, 1, "KR")
             ws2.write(r, 2, d.get('HS Code', ''))
@@ -490,7 +566,6 @@ else:
             st.divider()
             c1, c2 = st.columns([1, 1])
             with c1:
-                # 🚨 이제 에러 안 납니다 (자동 변환 처리됨)
                 full_excel = generate_official_excel(history_df)
                 st.download_button("📥 전체 기록 엑셀 다운로드", data=full_excel, file_name=f"CBAM_History_Full.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
             with c2:
