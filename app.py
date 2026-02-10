@@ -5,7 +5,6 @@ import pandas as pd
 import io
 from openai import OpenAI
 from datetime import datetime
-# difflib: 비슷한 글자 찾아주는 도구 (AI가 살짝 틀려도 찾아줌)
 import difflib 
 
 # ==========================================
@@ -73,7 +72,6 @@ def load_cbam_db():
         for _, row in df.iterrows():
             if pd.isna(row.get('category')): continue
             cat = str(row['category']).strip()
-            # 정확한 매칭을 위해 공백 제거
             try: rate = float(row.get('exchange_rate', 1450.0))
             except: rate = 1450.0
             db[cat] = {
@@ -94,31 +92,46 @@ def safe_float(value):
     try: return float(str(value).replace(',', '').replace('kg', '').replace('KG', '').strip())
     except: return 0.0
 
-# 비슷한 단어 찾아주는 함수 (AI가 'Steel Bolts'라고 해도 'Steel (Bolts/Screws)'를 찾아줌)
-def find_best_match(input_str, options):
-    if not input_str or input_str == "Other": return "Other"
-    # 1. 완전 일치 확인
-    if input_str in options: return input_str
-    # 2. 비슷하면 매칭 (0.6 이상)
-    matches = difflib.get_close_matches(input_str, options, n=1, cutoff=0.4)
+# ------------------------------------------------
+# 🕵️‍♂️ [업그레이드] 강제 매칭 함수 (Keyword Matching)
+# ------------------------------------------------
+def force_match_material(ai_item_name, ai_material, db_keys):
+    # 1. AI가 찾아온 품목명(Item Name)을 소문자로 변환
+    name_lower = str(ai_item_name).lower()
+    mat_lower = str(ai_material).lower()
+    
+    # 2. 키워드 검사 (여기가 핵심!)
+    # 나사, 볼트, 스크류가 들어있으면 무조건 Steel (Bolts/Screws)로 연결
+    if "bolt" in name_lower or "screw" in name_lower:
+        # DB 키 중에 'Bolt'가 포함된 놈을 찾음
+        found = [k for k in db_keys if "Bolt" in k or "Screw" in k]
+        if found: return found[0]
+        
+    # 알루미늄이 들어있으면 DB의 Aluminum (Bars...) 등으로 연결
+    if "aluminum" in name_lower or "aluminium" in name_lower:
+        found = [k for k in db_keys if "Aluminum" in k]
+        if found: return found[0]
+        
+    # 시트(Sheet), 플레이트(Plate) 확인
+    if "sheet" in name_lower or "plate" in name_lower:
+        found = [k for k in db_keys if "Sheet" in k or "Plate" in k]
+        if found: return found[0]
+
+    # 3. 키워드로 못 찾으면 difflib(유사도) 사용
+    matches = difflib.get_close_matches(ai_material, db_keys, n=1, cutoff=0.4)
     if matches: return matches[0]
+    
     return "Other"
 
 # ==========================================
 # 🧮 핵심 로직
 # ==========================================
 def calculate_tax_logic(material, weight):
-    # 재질 매칭 보정
-    matched_material = find_best_match(material, list(CBAM_DB.keys()))
-    
-    if matched_material in CBAM_DB: 
-        db = CBAM_DB[matched_material]
-    elif CBAM_DB: 
-        db = CBAM_DB[list(CBAM_DB.keys())[0]]
-    else: 
-        db = {"default":0, "optimized":0, "price":0, "exchange_rate":1450}
+    if material in CBAM_DB: db = CBAM_DB[material]
+    elif CBAM_DB: db = CBAM_DB[list(CBAM_DB.keys())[0]]
+    else: db = {"default":0, "optimized":0, "price":0, "exchange_rate":1450}
 
-    if weight <= 0: weight = 0.0 # 무게가 0이면 세금도 0
+    if weight <= 0: weight = 0.0
     rate = db.get('exchange_rate', 1450.0)
     
     bad_tax = int((weight/1000) * db['default'] * db['price'] * rate)
@@ -128,7 +141,7 @@ def calculate_tax_logic(material, weight):
         "bad_tax": bad_tax, 
         "good_tax": good_tax, 
         "savings": bad_tax - good_tax, 
-        "material_display": matched_material, # 보정된 이름 반환
+        "material_display": material, 
         "weight": weight, 
         "hs_code": db.get('hs_code', '000000'), 
         "exchange_rate": rate
@@ -166,11 +179,9 @@ def generate_official_excel(data_list):
             r = i + 1
             w_ton = d.get('Weight (kg)', 0) / 1000
             mat = d.get('Material', 'Iron/Steel')
-            
             if mat in CBAM_DB: db_info = CBAM_DB[mat]
             elif CBAM_DB: db_info = CBAM_DB[list(CBAM_DB.keys())[0]]
             else: db_info = {'default':0, 'exchange_rate':1450}
-
             factor = db_info.get('default', 0)
             rate = db_info.get('exchange_rate', 1450)
             
@@ -186,28 +197,22 @@ def generate_official_excel(data_list):
         ws2.set_column('A:I', 18)
     return output.getvalue()
 
-# ------------------------------------------------
-# 🤖 [AI 프롬프트 강화] 리스트에 있는 것만 골라라!
-# ------------------------------------------------
 def analyze_image(image_bytes, filename, username):
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     try:
-        # DB 키 목록을 텍스트로 변환 (AI에게 선택지 제공)
         cats_str = ", ".join(list(CBAM_DB.keys()))
-        
         response = client.chat.completions.create(
             model="gpt-4o", 
             temperature=0.0, 
             messages=[
                 {
                     "role": "system", 
-                    # 🚨 [중요] "Choose STRICTLY from this list" 명령 추가
-                    "content": f"You are a CBAM expert. Identify ALL distinct items. For each item, select the Material Category STRICTLY from this list: [{cats_str}]. If the item is 'Bolts' or 'Screws', you MUST select 'Steel (Bolts/Screws)'. If 'Aluminum', select 'Aluminum (Bars/Rods)'. Extract 'Net Weight' in kg. Return JSON: {{'items': [{{'item': 'Item Name', 'material': 'Selected Category', 'weight': 1000, 'hs_code': '000000'}}, ...]}}."
+                    "content": f"You are a CBAM expert. Identify ALL distinct items. For each item, select the Material Category STRICTLY from this list: [{cats_str}]. If unsure, use 'Other'. Extract 'Net Weight' in kg. Return JSON: {{'items': [{{'item': 'Item Name', 'material': 'Selected Category', 'weight': 1000, 'hs_code': '000000'}}, ...]}}."
                 },
                 {
                     "role": "user", 
                     "content": [
-                        {"type": "text", "text": "Extract CBAM items."}, 
+                        {"type": "text", "text": "Extract all CBAM items."}, 
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
@@ -222,9 +227,12 @@ def analyze_image(image_bytes, filename, username):
         for item in items_list:
             w = safe_float(item.get('weight', 0))
             
-            # 재질 이름 보정 (혹시 AI가 실수해도 비슷하면 맞춰줌)
-            raw_mat = item.get('material', 'Other')
-            corrected_mat = find_best_match(raw_mat, list(CBAM_DB.keys()))
+            # 🚨 [여기 수정됨] 강제 매칭 로직 적용
+            # AI가 'Steel Bolt'라고 가져오면 -> 'Steel (Bolts/Screws)'로 바꿈
+            raw_item_name = item.get('item', '')
+            raw_material = item.get('material', 'Other')
+            
+            corrected_mat = force_match_material(raw_item_name, raw_material, list(CBAM_DB.keys()))
             
             calc = calculate_tax_logic(corrected_mat, w)
             
@@ -232,8 +240,8 @@ def analyze_image(image_bytes, filename, username):
                 "File Name": filename,
                 "Date": datetime.now().strftime('%Y-%m-%d'),
                 "Company": username.upper(),
-                "Item Name": item.get('item', 'Unknown'),
-                "Material": corrected_mat, # 보정된 이름 사용
+                "Item Name": raw_item_name,
+                "Material": corrected_mat, # 보정된 재질 이름
                 "Weight (kg)": w,
                 "HS Code": item.get('hs_code', calc['hs_code']),
                 "Default Tax (KRW)": calc['bad_tax'],
@@ -257,7 +265,6 @@ def analyze_image(image_bytes, filename, username):
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'batch_results' not in st.session_state: st.session_state['batch_results'] = None
 
-# --- [화면 1] 로그인 ---
 if not st.session_state['logged_in']:
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
@@ -278,8 +285,6 @@ if not st.session_state['logged_in']:
                         st.error("❌ 로그인 실패")
                 else:
                     st.error("⚠️ DB 연결 실패")
-
-# --- [화면 2] 대시보드 ---
 else:
     with st.sidebar:
         st.title("CBAM Master")
@@ -333,7 +338,6 @@ else:
         st.subheader("📊 분석 결과 (Review)")
         results = st.session_state['batch_results']
         
-        # 합계 계산
         total_tax_krw = sum([r.get('Default Tax (KRW)', 0) for r in results])
         total_weight = sum([safe_float(r.get('Weight (kg)', 0)) for r in results])
         
@@ -347,37 +351,24 @@ else:
         if "Other" not in mat_options: mat_options.append("Other")
 
         updated_final_results = []
-
         for idx, row in enumerate(results):
-            # Expander 제목에 정보 표시
-            file_n = row.get('File Name', '')
-            item_n = row.get('Item Name', 'Unknown')
-            w_display = row.get('Weight (kg)', 0)
-            
-            with st.expander(f"📄 {file_n} - {item_n} ({w_display}kg)", expanded=False):
+            with st.expander(f"📄 {row.get('File Name','')} - {row.get('Item Name','Unknown')} ({row.get('Weight (kg)',0)}kg)", expanded=False):
                 c1, c2, c3 = st.columns([2, 1, 1])
                 
-                # 1. 재질 (매칭된 값으로 자동 선택)
                 curr_mat = row.get('Material', 'Other')
                 if curr_mat not in mat_options: curr_mat = "Other"
                 new_mat = c1.selectbox("재질", mat_options, index=mat_options.index(curr_mat), key=f"m_{idx}")
                 
-                # 2. HS Code
                 curr_hs = str(row.get('HS Code', '000000'))
                 new_hs = c2.text_input("HS Code", value=curr_hs, key=f"h_{idx}")
                 
-                # 3. 무게 (입력창에 값이 채워져 있도록 설정)
                 curr_w = safe_float(row.get('Weight (kg)', 0))
                 new_weight = c3.number_input("중량 (kg)", value=curr_w, key=f"w_{idx}")
                 
-                # 재계산 및 업데이트
                 recalc = calculate_tax_logic(new_mat, new_weight)
                 row.update({
-                    'Material': new_mat, 
-                    'HS Code': new_hs, 
-                    'Weight (kg)': new_weight, 
-                    'Default Tax (KRW)': recalc['bad_tax'], 
-                    'exchange_rate': recalc['exchange_rate']
+                    'Material': new_mat, 'HS Code': new_hs, 'Weight (kg)': new_weight, 
+                    'Default Tax (KRW)': recalc['bad_tax'], 'exchange_rate': recalc['exchange_rate']
                 })
                 updated_final_results.append(row)
 
