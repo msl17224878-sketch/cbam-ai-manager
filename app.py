@@ -8,6 +8,7 @@ from datetime import datetime
 import difflib 
 import uuid
 import time
+import sqlite3
 
 # ==========================================
 # 🎨 [UI 설정]
@@ -59,6 +60,66 @@ except Exception as e:
 USER_DB_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqCIpXf7jM4wyn8EhpoZipkUBQ2K43rEiaNi-KyoaI1j93YPNMLpavW07-LddivnoUL-FKFDMCFPkI/pub?gid=0&single=true&output=csv"
 CBAM_DATA_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTkYfVcC9EAv_xW0FChVWK3oMsPaxXiRL-hOQQeGT_aLsUG044s1L893er36HVJUpgTCrsM0xElFpW/pub?gid=747982569&single=true&output=csv"
 
+# ------------------------------------------------
+# 💾 데이터베이스(DB) 관리
+# ------------------------------------------------
+def init_db():
+    conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            date TEXT,
+            filename TEXT,
+            item_name TEXT,
+            material TEXT,
+            weight REAL,
+            hs_code TEXT,
+            tax_krw INTEGER,
+            exchange_rate REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_to_db(data_list):
+    conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
+    c = conn.cursor()
+    for item in data_list:
+        c.execute('''
+            INSERT INTO history (username, date, filename, item_name, material, weight, hs_code, tax_krw, exchange_rate)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            item['Company'], item['Date'], item['File Name'], item['Item Name'], 
+            item['Material'], item['Weight (kg)'], item['HS Code'], 
+            item['Default Tax (KRW)'], item['exchange_rate']
+        ))
+    conn.commit()
+    conn.close()
+
+def load_from_db(username):
+    conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
+    df = pd.read_sql_query("SELECT * FROM history WHERE username = ?", conn, params=(username,))
+    conn.close()
+    if not df.empty:
+        df = df.rename(columns={
+            'date': 'Date', 'filename': 'File Name', 'item_name': 'Item Name',
+            'material': 'Material', 'weight': 'Weight (kg)', 'hs_code': 'HS Code',
+            'tax_krw': 'Default Tax (KRW)', 'exchange_rate': 'exchange_rate', 'username': 'Company'
+        })
+        df = df.sort_values(by='id', ascending=False)
+    return df
+
+def clear_my_history(username):
+    conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
+    c = conn.cursor()
+    c.execute("DELETE FROM history WHERE username = ?", (username,))
+    conn.commit()
+    conn.close()
+
+init_db()
+
 @st.cache_data(ttl=60)
 def load_user_data():
     try:
@@ -91,7 +152,6 @@ def load_cbam_db():
             try: rate = float(row.get('exchange_rate', 1450.0))
             except: rate = 1450.0
             
-            # 🚨 [중요] DB에서 HS Code 읽어오기 (없으면 000000)
             raw_hs = str(row.get('hs_code', '000000')).strip()
             if raw_hs == 'nan' or raw_hs == '': raw_hs = '000000'
             
@@ -163,6 +223,8 @@ def calculate_tax_logic(material, weight):
 
 def generate_official_excel(data_list):
     if not data_list: return None
+    if isinstance(data_list, pd.DataFrame): data_list = data_list.to_dict('records')
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         wb = writer.book
@@ -193,12 +255,9 @@ def generate_official_excel(data_list):
             r = i + 1
             w_ton = d.get('Weight (kg)', 0) / 1000
             mat = d.get('Material', 'Iron/Steel')
-            if mat in CBAM_DB: db_info = CBAM_DB[mat]
-            elif CBAM_DB: db_info = CBAM_DB[list(CBAM_DB.keys())[0]]
-            else: db_info = {'default':0, 'exchange_rate':1450}
-            factor = db_info.get('default', 0)
-            rate = db_info.get('exchange_rate', 1450)
-            
+            factor = 0
+            if mat in CBAM_DB: factor = CBAM_DB[mat].get('default', 0)
+            rate = d.get('exchange_rate', 1450)
             ws2.write(r, 0, r)
             ws2.write(r, 1, "KR")
             ws2.write(r, 2, d.get('HS Code', ''))
@@ -215,14 +274,14 @@ def analyze_image(image_bytes, filename, username):
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     try:
         cats_str = ", ".join(list(CBAM_DB.keys()))
-        # 🚨 [Prompt 강화] HS Code 반드시 찾아내라고 명령
+        # 🚨 [V10.6] 포장재 제거(IGNORE) 명령 추가
         response = client.chat.completions.create(
             model="gpt-4o", 
             temperature=0.0, 
             messages=[
                 {
                     "role": "system", 
-                    "content": f"You are a CBAM expert. Identify ALL distinct items. For each item, select the Material Category STRICTLY from this list: [{cats_str}]. If unsure, use 'Other'. Extract 'Net Weight' in kg. Extract 'HS Code' (or H.S. Code, Commodity Code) if visible (numbers only). Return JSON: {{'items': [{{'item': 'Item Name', 'material': 'Selected Category', 'weight': 1000, 'hs_code': '731800'}}, ...]}}."
+                    "content": f"You are a CBAM expert. Identify distinct items relevant to CBAM (Iron, Steel, Aluminum, Cement, Hydrogen, Fertilizers). IGNORE non-CBAM items such as packing materials (plastic wrapping, wood pallets, boxes). For each item, select the Material Category STRICTLY from this list: [{cats_str}]. If unsure, use 'Other'. Extract 'Net Weight' in kg. Extract 'HS Code' (numbers only). Return JSON: {{'items': [{{'item': 'Item Name', 'material': 'Selected Category', 'weight': 1000, 'hs_code': '731800'}}, ...]}}."
                 },
                 {
                     "role": "user", 
@@ -243,14 +302,10 @@ def analyze_image(image_bytes, filename, username):
             w = safe_float(item.get('weight', 0))
             raw_item_name = item.get('item', '')
             raw_material = item.get('material', 'Other')
-            
-            # AI가 읽은 HS Code
             ai_hs_code = str(item.get('hs_code', '')).replace('.', '').strip()
             
             corrected_mat = force_match_material(raw_item_name, raw_material, list(CBAM_DB.keys()))
             calc = calculate_tax_logic(corrected_mat, w)
-            
-            # 🚨 [핵심] AI가 읽은 HS코드가 있으면 그걸 쓰고, 없으면 DB값 씀
             final_hs_code = ai_hs_code if (ai_hs_code and ai_hs_code != '000000') else calc['hs_code']
             
             processed_items.append({
@@ -260,7 +315,7 @@ def analyze_image(image_bytes, filename, username):
                 "Item Name": raw_item_name,
                 "Material": corrected_mat,
                 "Weight (kg)": w,
-                "HS Code": final_hs_code, # 여기서 결정된 값 사용
+                "HS Code": final_hs_code, 
                 "Default Tax (KRW)": calc['bad_tax'],
                 "exchange_rate": calc['exchange_rate']
             })
@@ -280,7 +335,6 @@ def analyze_image(image_bytes, filename, username):
 # ==========================================
 def process_analysis():
     uploaded_files = st.session_state.get('upl_files', [])
-    
     if uploaded_files:
         current_credits = st.session_state.get('credits', 0)
         required_credits = len(uploaded_files)
@@ -288,7 +342,6 @@ def process_analysis():
         
         if is_unlimited or (current_credits >= required_credits):
             st.session_state['run_id'] = str(uuid.uuid4())
-            
             with st.spinner("AI가 정밀 분석 중입니다... 잠시만 기다려주세요."):
                 all_results = []
                 for i, file in enumerate(uploaded_files):
@@ -298,13 +351,13 @@ def process_analysis():
                     else: all_results.append(items)
                 
                 st.session_state['batch_results'] = all_results
-                st.session_state['history_db'].extend(all_results)
+                save_to_db(all_results)
                 
                 if not is_unlimited:
                     st.session_state['credits'] -= required_credits
                     st.toast(f"💳 {required_credits} 크레딧 차감 완료")
                 else:
-                    st.toast("✅ 분석 완료!")
+                    st.toast("✅ 분석 및 저장 완료!")
         else:
             st.error(f"🚫 크레딧 부족!")
 
@@ -315,7 +368,6 @@ def process_analysis():
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'batch_results' not in st.session_state: st.session_state['batch_results'] = None
 if 'run_id' not in st.session_state: st.session_state['run_id'] = str(uuid.uuid4())
-if 'history_db' not in st.session_state: st.session_state['history_db'] = []
 
 if not st.session_state['logged_in']:
     c1, c2, c3 = st.columns([1, 2, 1])
@@ -347,19 +399,15 @@ else:
         if current_credits >= 999999: st.metric("잔여 크레딧", "♾️ 무제한 (VIP)")
         else: st.metric("잔여 크레딧", f"{current_credits} 회")
         
-        hist_len = len(st.session_state['history_db'])
-        st.caption(f"📝 저장된 기록: {hist_len}건")
+        my_history_df = load_from_db(st.session_state['username'])
+        st.caption(f"📝 저장된 기록: {len(my_history_df)}건")
         
         if st.button("로그아웃"):
             st.session_state['logged_in'] = False
-            st.session_state['history_db'] = [] 
             st.rerun()
 
     tab1, tab2 = st.tabs(["🚀 분석 (Analysis)", "🕒 기록 관리 (History)"])
 
-    # ----------------------------------
-    # TAB 1: 분석 화면
-    # ----------------------------------
     with tab1:
         st.markdown("### 📄 인보이스 분석")
         if CBAM_DB: krw_rate = CBAM_DB[list(CBAM_DB.keys())[0]].get('exchange_rate', 1450)
@@ -417,26 +465,24 @@ else:
             if excel_data:
                 st.download_button("📥 엑셀 다운로드", data=excel_data, file_name=f"CBAM_Report_NOW.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
 
-    # ----------------------------------
-    # TAB 2: 히스토리 화면
-    # ----------------------------------
     with tab2:
         st.markdown("### 🕒 계산 기록 관리 (History)")
-        st.caption("로그인 유지 중에 계산한 모든 내역이 여기에 저장됩니다.")
+        st.caption("서버 데이터베이스에 영구 저장된 기록입니다. (로그아웃 해도 유지됨)")
         
-        if len(st.session_state['history_db']) > 0:
-            history_df = pd.DataFrame(st.session_state['history_db'])
+        history_df = load_from_db(st.session_state['username'])
+        
+        if not history_df.empty:
             cols_to_show = ['Date', 'File Name', 'Item Name', 'Material', 'Weight (kg)', 'Default Tax (KRW)', 'HS Code']
             st.dataframe(history_df[cols_to_show], use_container_width=True)
             
             st.divider()
             c1, c2 = st.columns([1, 1])
             with c1:
-                full_excel = generate_official_excel(st.session_state['history_db'])
+                full_excel = generate_official_excel(history_df)
                 st.download_button("📥 전체 기록 엑셀 다운로드", data=full_excel, file_name=f"CBAM_History_Full.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
             with c2:
-                if st.button("🗑️ 기록 초기화"):
-                    st.session_state['history_db'] = []
+                if st.button("🗑️ 기록 초기화 (주의)"):
+                    clear_my_history(st.session_state['username'])
                     st.rerun()
         else:
-            st.info("📭 아직 계산된 기록이 없습니다.")
+            st.info("📭 저장된 기록이 없습니다.")
