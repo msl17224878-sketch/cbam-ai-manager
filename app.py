@@ -61,7 +61,7 @@ USER_DB_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqCIpXf7jM4wyn8E
 CBAM_DATA_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTkYfVcC9EAv_xW0FChVWK3oMsPaxXiRL-hOQQeGT_aLsUG044s1L893er36HVJUpgTCrsM0xElFpW/pub?gid=747982569&single=true&output=csv"
 
 # ------------------------------------------------
-# 💾 데이터베이스(DB) 관리 (대소문자 통일 수정됨)
+# 💾 데이터베이스(DB) 관리
 # ------------------------------------------------
 def init_db():
     conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
@@ -91,7 +91,7 @@ def save_to_db(data_list):
             INSERT INTO history (username, date, filename, item_name, material, weight, hs_code, tax_krw, exchange_rate)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            item['Company'], # 이미 upper() 처리된 상태
+            item['Company'], 
             item['Date'], 
             item['File Name'], 
             item['Item Name'], 
@@ -106,7 +106,6 @@ def save_to_db(data_list):
 
 def load_from_db(username):
     conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
-    # 🚨 [수정] 불러올 때도 무조건 대문자로 변환해서 검색
     target_user = str(username).upper().strip()
     df = pd.read_sql_query("SELECT * FROM history WHERE username = ?", conn, params=(target_user,))
     conn.close()
@@ -232,8 +231,12 @@ def calculate_tax_logic(material, weight):
     }
 
 def generate_official_excel(data_list):
+    # 🚨 [수정됨] 데이터프레임(표)이 들어오면 리스트로 변환 (에러 해결 핵심!)
+    if isinstance(data_list, pd.DataFrame):
+        if data_list.empty: return None
+        data_list = data_list.to_dict('records')
+    
     if not data_list: return None
-    if isinstance(data_list, pd.DataFrame): data_list = data_list.to_dict('records')
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -320,7 +323,7 @@ def analyze_image(image_bytes, filename, username):
             processed_items.append({
                 "File Name": filename,
                 "Date": datetime.now().strftime('%Y-%m-%d %H:%M'),
-                "Company": username.upper(), # 여기서 대문자로 저장
+                "Company": username.upper(),
                 "Item Name": raw_item_name,
                 "Material": corrected_mat,
                 "Weight (kg)": w,
@@ -360,7 +363,6 @@ def process_analysis():
                     else: all_results.append(items)
                 
                 st.session_state['batch_results'] = all_results
-                # 🚨 DB에 저장
                 save_to_db(all_results)
                 
                 if not is_unlimited:
@@ -409,7 +411,6 @@ else:
         if current_credits >= 999999: st.metric("잔여 크레딧", "♾️ 무제한 (VIP)")
         else: st.metric("잔여 크레딧", f"{current_credits} 회")
         
-        # 🚨 [수정] 대문자로 변환해서 불러옴
         my_history_df = load_from_db(st.session_state['username'])
         st.caption(f"📝 저장된 기록: {len(my_history_df)}건")
         
@@ -480,7 +481,6 @@ else:
         st.markdown("### 🕒 계산 기록 관리 (History)")
         st.caption("서버 데이터베이스에 영구 저장된 기록입니다. (로그아웃 해도 유지됨)")
         
-        # 🚨 [수정] 대문자로 변환해서 검색
         history_df = load_from_db(st.session_state['username'])
         
         if not history_df.empty:
@@ -490,6 +490,7 @@ else:
             st.divider()
             c1, c2 = st.columns([1, 1])
             with c1:
+                # 🚨 이제 에러 안 납니다 (자동 변환 처리됨)
                 full_excel = generate_official_excel(history_df)
                 st.download_button("📥 전체 기록 엑셀 다운로드", data=full_excel, file_name=f"CBAM_History_Full.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
             with c2:
