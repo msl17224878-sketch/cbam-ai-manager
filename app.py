@@ -143,10 +143,9 @@ def load_user_data():
     except:
         return pd.DataFrame()
 
-@st.cache_data(ttl=300) 
+# 🚨 [수정] ttl=1초로 변경 (실시간 업데이트)
+@st.cache_data(ttl=1) 
 def load_cbam_db():
-    # 🚨 [1. 전체 품목 표준 DB 정의] (구글 시트가 없을 때를 대비한 안전망)
-    # 여기에 없는 품목은 세상에 없다고 봐도 됩니다.
     master_db = {
         # 철강 (Iron & Steel)
         "Steel (Bolts/Screws)": {"default": 2.34, "optimized": 1.5, "hs_code": "731800", "price": 85.0, "exchange_rate": 1450},
@@ -156,7 +155,6 @@ def load_cbam_db():
         "Steel (Bars/Rods)": {"default": 1.85, "optimized": 1.2, "hs_code": "721400", "price": 85.0, "exchange_rate": 1450},
         "Steel (Structures)": {"default": 2.10, "optimized": 1.5, "hs_code": "730800", "price": 85.0, "exchange_rate": 1450},
         "Steel (Fittings)": {"default": 2.40, "optimized": 1.7, "hs_code": "730700", "price": 85.0, "exchange_rate": 1450},
-        
         # 알루미늄 (Aluminum)
         "Aluminum (Ingots)": {"default": 12.50, "optimized": 8.5, "hs_code": "760100", "price": 85.0, "exchange_rate": 1450},
         "Aluminum (Bars/Rods)": {"default": 8.63, "optimized": 5.2, "hs_code": "760400", "price": 85.0, "exchange_rate": 1450},
@@ -164,50 +162,87 @@ def load_cbam_db():
         "Aluminum (Foil)": {"default": 9.50, "optimized": 6.5, "hs_code": "760700", "price": 85.0, "exchange_rate": 1450},
         "Aluminum (Pipes/Tubes)": {"default": 8.90, "optimized": 5.8, "hs_code": "760800", "price": 85.0, "exchange_rate": 1450},
         "Aluminum (Structures)": {"default": 9.10, "optimized": 6.2, "hs_code": "761000", "price": 85.0, "exchange_rate": 1450},
-
         # 시멘트 (Cement)
         "Cement": {"default": 0.86, "optimized": 0.6, "hs_code": "252300", "price": 85.0, "exchange_rate": 1450},
         "Cement (Clinker)": {"default": 0.90, "optimized": 0.7, "hs_code": "252310", "price": 85.0, "exchange_rate": 1450},
-
-        # 비료 & 수소 (Fertilizer & Hydrogen) - 확장 대비
+        # 비료 & 수소
         "Fertilizer (Nitric Acid)": {"default": 1.50, "optimized": 1.0, "hs_code": "280800", "price": 85.0, "exchange_rate": 1450},
         "Hydrogen": {"default": 8.00, "optimized": 5.0, "hs_code": "280410", "price": 85.0, "exchange_rate": 1450},
     }
 
-    # 🚨 [2. 구글 시트 연동] 시트 내용으로 덮어쓰기 (업데이트 우선권)
     try:
         df = pd.read_csv(CBAM_DATA_URL)
+        # 헤더 정리 (공백 제거, 소문자 변환)
         first_cell = str(df.iloc[0,0]).strip().lower()
         if 'category' not in df.columns.str.lower() and first_cell == 'category':
             new_header = df.iloc[0]
             df = df[1:]
             df.columns = new_header
-        df.columns = df.columns.astype(str).str.strip().str.lower()
         
-        for _, row in df.iterrows():
-            if pd.isna(row.get('category')): continue
-            cat = str(row['category']).strip()
-            
-            # 시트에 있는 값들 가져오기
-            try: rate = float(row.get('exchange_rate', 1450.0))
-            except: rate = 1450.0
-            
-            raw_hs = str(row.get('hs_code', '000000')).strip()
-            if raw_hs == 'nan' or raw_hs == '': raw_hs = '000000'
-            
-            default_val = float(row.get('default', 0))
-            optimized_val = float(row.get('optimized', 0))
+        # 🚨 [강력한 컬럼 매핑] 이름이 조금 달라도 찾아내는 로직
+        cols = {c.strip().lower(): c for c in df.columns}
+        
+        # 환율 컬럼 찾기 (exchange_rate, exchange rate, exch rate 등)
+        rate_col = None
+        for k in cols:
+            if 'exch' in k and 'rate' in k:
+                rate_col = cols[k]
+                break
+        
+        # HS코드 컬럼 찾기
+        hs_col = None
+        for k in cols:
+            if 'hs' in k and 'code' in k:
+                hs_col = cols[k]
+                break
 
-            # Master DB 업데이트 (시트 값이 있으면 덮어씀)
-            master_db[cat] = {
-                "default": default_val, 
-                "optimized": optimized_val, 
-                "hs_code": raw_hs.split('.')[0], 
-                "price": 85.0, 
-                "exchange_rate": rate
-            }
+        # 카테고리 컬럼 찾기
+        cat_col = None
+        for k in cols:
+            if 'cat' in k:
+                cat_col = cols[k]
+                break
+
+        if cat_col:
+            for _, row in df.iterrows():
+                if pd.isna(row[cat_col]): continue
+                cat = str(row[cat_col]).strip()
+                
+                # 값 읽기 (실패시 기본값)
+                rate_val = 1450.0
+                if rate_col:
+                    try: rate_val = float(str(row[rate_col]).replace(',', '').strip())
+                    except: pass
+                
+                hs_val = '000000'
+                if hs_col:
+                    raw_hs = str(row[hs_col]).strip()
+                    if raw_hs != 'nan' and raw_hs != '': hs_val = raw_hs.split('.')[0]
+                
+                # Default / Optimized (이름으로 찾기)
+                def_val = 0.0
+                opt_val = 0.0
+                
+                # 컬럼명 순회하며 찾기
+                for c in df.columns:
+                    c_lower = str(c).lower()
+                    if 'default' in c_lower:
+                         try: def_val = float(str(row[c]).strip())
+                         except: pass
+                    if 'optimized' in c_lower:
+                         try: opt_val = float(str(row[c]).strip())
+                         except: pass
+
+                # Master DB 업데이트 (덮어쓰기)
+                master_db[cat] = {
+                    "default": def_val, 
+                    "optimized": opt_val, 
+                    "hs_code": hs_val, 
+                    "price": 85.0, 
+                    "exchange_rate": rate_val
+                }
     except Exception as e:
-        # 시트 로드 실패해도 master_db가 있으니 안심
+        print(f"Sheet Load Error: {e}")
         pass 
     
     return master_db
@@ -223,7 +258,6 @@ def force_match_material(ai_item_name, ai_material, db_keys):
     name_lower = str(ai_item_name).lower()
     mat_lower = str(ai_material).lower()
     
-    # 🚨 [매칭 로직] DB에 있는 모든 키를 대상으로 검색
     # 1. 파이프/튜브
     if "pipe" in name_lower or "tube" in name_lower:
         found = [k for k in db_keys if "Pipes" in k]
@@ -237,7 +271,7 @@ def force_match_material(ai_item_name, ai_material, db_keys):
     # 2. 와이어/케이블
     if "wire" in name_lower or "cable" in name_lower:
         found = [k for k in db_keys if "Wire" in k]
-        if found: return found[0] # Steel (Wire)
+        if found: return found[0]
 
     # 3. 구조물
     if "structure" in name_lower or "beam" in name_lower:
@@ -258,7 +292,7 @@ def force_match_material(ai_item_name, ai_material, db_keys):
              return "Aluminum (Bars/Rods)"
         if "foil" in name_lower:
              return "Aluminum (Foil)"
-        if found: return found[0] # Default Aluminum
+        if found: return found[0]
 
     # 6. 철판/시트
     if "sheet" in name_lower or "plate" in name_lower or "coil" in name_lower:
@@ -280,12 +314,8 @@ def force_match_material(ai_item_name, ai_material, db_keys):
 # 🧮 핵심 로직
 # ==========================================
 def calculate_tax_logic(material, weight):
-    # DB에 있으면 가져오고, 없으면 0
-    if material in CBAM_DB: 
-        db = CBAM_DB[material]
-    else: 
-        # 혹시라도 매칭 실패 시 기본값 (안전장치)
-        db = {"default":0, "optimized":0, "price":0, "exchange_rate":1450}
+    if material in CBAM_DB: db = CBAM_DB[material]
+    else: db = {"default":0, "optimized":0, "price":0, "exchange_rate":1450}
 
     if weight <= 0: weight = 0.0
     rate = db.get('exchange_rate', 1450.0)
@@ -340,13 +370,9 @@ def generate_official_excel(data_list):
             r = i + 1
             w_ton = d.get('Weight (kg)', 0) / 1000
             mat = d.get('Material', 'Iron/Steel')
-            
-            # DB 정보 재확인
             factor = 0
             if mat in CBAM_DB: factor = CBAM_DB[mat].get('default', 0)
-            
             rate = d.get('exchange_rate', 1450)
-            
             ws2.write(r, 0, r)
             ws2.write(r, 1, "KR")
             ws2.write(r, 2, d.get('HS Code', ''))
@@ -489,6 +515,13 @@ else:
         
         my_history_df = load_from_db(st.session_state['username'])
         st.caption(f"📝 저장된 기록: {len(my_history_df)}건")
+        
+        # 🚨 [검증용] 현재 로드된 DB 상태 표시 (디버깅용)
+        with st.expander("🛠️ 현재 적용된 환율 확인"):
+             if "Steel (Pipes/Tubes)" in CBAM_DB:
+                 chk = CBAM_DB["Steel (Pipes/Tubes)"]
+                 st.write(f"**Pipe 환율:** {chk['exchange_rate']:,.0f} KRW")
+                 st.write(f"**Pipe 계수:** {chk['default']}")
         
         if st.button("로그아웃"):
             st.session_state['logged_in'] = False
