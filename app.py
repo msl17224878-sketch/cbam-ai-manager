@@ -61,7 +61,7 @@ USER_DB_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqCIpXf7jM4wyn8E
 CBAM_DATA_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTkYfVcC9EAv_xW0FChVWK3oMsPaxXiRL-hOQQeGT_aLsUG044s1L893er36HVJUpgTCrsM0xElFpW/pub?gid=747982569&single=true&output=csv"
 
 # ------------------------------------------------
-# 💾 데이터베이스(DB) 관리
+# 💾 데이터베이스(DB) 관리 (대소문자 통일 수정됨)
 # ------------------------------------------------
 def init_db():
     conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
@@ -91,17 +91,26 @@ def save_to_db(data_list):
             INSERT INTO history (username, date, filename, item_name, material, weight, hs_code, tax_krw, exchange_rate)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            item['Company'], item['Date'], item['File Name'], item['Item Name'], 
-            item['Material'], item['Weight (kg)'], item['HS Code'], 
-            item['Default Tax (KRW)'], item['exchange_rate']
+            item['Company'], # 이미 upper() 처리된 상태
+            item['Date'], 
+            item['File Name'], 
+            item['Item Name'], 
+            item['Material'], 
+            item['Weight (kg)'], 
+            item['HS Code'], 
+            item['Default Tax (KRW)'], 
+            item['exchange_rate']
         ))
     conn.commit()
     conn.close()
 
 def load_from_db(username):
     conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
-    df = pd.read_sql_query("SELECT * FROM history WHERE username = ?", conn, params=(username,))
+    # 🚨 [수정] 불러올 때도 무조건 대문자로 변환해서 검색
+    target_user = str(username).upper().strip()
+    df = pd.read_sql_query("SELECT * FROM history WHERE username = ?", conn, params=(target_user,))
     conn.close()
+    
     if not df.empty:
         df = df.rename(columns={
             'date': 'Date', 'filename': 'File Name', 'item_name': 'Item Name',
@@ -114,7 +123,8 @@ def load_from_db(username):
 def clear_my_history(username):
     conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
     c = conn.cursor()
-    c.execute("DELETE FROM history WHERE username = ?", (username,))
+    target_user = str(username).upper().strip()
+    c.execute("DELETE FROM history WHERE username = ?", (target_user,))
     conn.commit()
     conn.close()
 
@@ -274,7 +284,6 @@ def analyze_image(image_bytes, filename, username):
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     try:
         cats_str = ", ".join(list(CBAM_DB.keys()))
-        # 🚨 [V10.6] 포장재 제거(IGNORE) 명령 추가
         response = client.chat.completions.create(
             model="gpt-4o", 
             temperature=0.0, 
@@ -311,7 +320,7 @@ def analyze_image(image_bytes, filename, username):
             processed_items.append({
                 "File Name": filename,
                 "Date": datetime.now().strftime('%Y-%m-%d %H:%M'),
-                "Company": username.upper(),
+                "Company": username.upper(), # 여기서 대문자로 저장
                 "Item Name": raw_item_name,
                 "Material": corrected_mat,
                 "Weight (kg)": w,
@@ -351,6 +360,7 @@ def process_analysis():
                     else: all_results.append(items)
                 
                 st.session_state['batch_results'] = all_results
+                # 🚨 DB에 저장
                 save_to_db(all_results)
                 
                 if not is_unlimited:
@@ -399,6 +409,7 @@ else:
         if current_credits >= 999999: st.metric("잔여 크레딧", "♾️ 무제한 (VIP)")
         else: st.metric("잔여 크레딧", f"{current_credits} 회")
         
+        # 🚨 [수정] 대문자로 변환해서 불러옴
         my_history_df = load_from_db(st.session_state['username'])
         st.caption(f"📝 저장된 기록: {len(my_history_df)}건")
         
@@ -469,6 +480,7 @@ else:
         st.markdown("### 🕒 계산 기록 관리 (History)")
         st.caption("서버 데이터베이스에 영구 저장된 기록입니다. (로그아웃 해도 유지됨)")
         
+        # 🚨 [수정] 대문자로 변환해서 검색
         history_df = load_from_db(st.session_state['username'])
         
         if not history_df.empty:
