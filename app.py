@@ -7,6 +7,7 @@ from openai import OpenAI
 from datetime import datetime
 import difflib 
 import uuid
+import time
 
 # ==========================================
 # 🎨 [UI 설정]
@@ -331,35 +332,28 @@ else:
                 
                 if can_run:
                     if st.button(f"🚀 AI 분석 시작", type="primary"):
-                        st.session_state['run_id'] = str(uuid.uuid4()) # 새 작업 ID 발급
+                        st.session_state['run_id'] = str(uuid.uuid4())
                         
-                        progress_text = "AI가 정밀 분석 중입니다..."
-                        my_bar = st.progress(0, text=progress_text)
-                        all_results = []
+                        # ✨ [수정됨] 스피너(뱅글뱅글)로 변경해서 작동 중임을 확실히 보여줌
+                        with st.spinner('AI가 문서를 분석하고 있습니다... 잠시만 기다려주세요.'):
+                            all_results = []
+                            for i, file in enumerate(uploaded_files):
+                                items = analyze_image(file.read(), file.name, st.session_state['username'])
+                                if isinstance(items, list): all_results.extend(items)
+                                else: all_results.append(items)
+                            
+                            st.session_state['batch_results'] = all_results
+                            st.session_state['history_db'].extend(all_results)
+                            
+                            if not is_unlimited:
+                                st.session_state['credits'] -= required_credits
                         
-                        for i, file in enumerate(uploaded_files):
-                            items = analyze_image(file.read(), file.name, st.session_state['username'])
-                            if isinstance(items, list): all_results.extend(items)
-                            else: all_results.append(items)
-                            my_bar.progress((i + 1) / len(uploaded_files))
-                        
-                        # 1. 결과 저장
-                        st.session_state['batch_results'] = all_results
-                        st.session_state['history_db'].extend(all_results)
-                        
-                        # 2. 크레딧 차감
-                        if not is_unlimited:
-                            st.session_state['credits'] -= required_credits
-                            st.toast(f"💳 {required_credits} 크레딧 차감 완료")
-                        else:
-                            st.toast("✅ 분석이 완료되었습니다!")
-
-                        # 🚨 [수정] st.rerun() 삭제! -> 이제 버튼 누르면 바로 밑에 결과가 뜹니다.
-
+                        # ✨ [중요] 계산 끝났으면 화면을 새로고침해서 결과를 보여줘라!
+                        st.rerun()
                 else:
                     st.error(f"🚫 **크레딧 부족!**")
 
-        # 결과 표시 (버튼 눌러서 batch_results가 채워지면 바로 실행됨)
+        # 결과 표시
         if st.session_state['batch_results']:
             st.divider()
             st.subheader("📊 금회 분석 결과")
