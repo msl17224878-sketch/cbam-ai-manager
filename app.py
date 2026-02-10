@@ -147,6 +147,8 @@ def generate_official_excel(data_list):
             r = i + 1
             w_ton = d.get('Weight (kg)', 0) / 1000
             mat = d.get('Material', 'Iron/Steel')
+            
+            # DB Safe Check
             if mat in CBAM_DB: db_info = CBAM_DB[mat]
             elif CBAM_DB: db_info = CBAM_DB[list(CBAM_DB.keys())[0]]
             else: db_info = {'default':0, 'exchange_rate':1450}
@@ -167,13 +169,12 @@ def generate_official_excel(data_list):
     return output.getvalue()
 
 # ------------------------------------------------
-# 🤖 [업그레이드] 다중 품목 인식 (Multi-Row Extraction)
+# 🤖 [수정됨] 다중 품목 인식 + 키 에러 방지 (Mapping)
 # ------------------------------------------------
 def analyze_image(image_bytes, filename, username):
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     try:
         cats = list(CBAM_DB.keys())
-        # 프롬프트 강화: "모든 항목을 리스트로 찾아라"
         response = client.chat.completions.create(
             model="gpt-4o", 
             temperature=0.0, 
@@ -198,24 +199,35 @@ def analyze_image(image_bytes, filename, username):
         
         processed_items = []
         for item in items_list:
-            item['weight'] = safe_float(item.get('weight', 0))
-            calc = calculate_tax_logic(item.get('material', 'Other'), item['weight'])
-            item.update(calc)
-            item.update({
-                "File Name": filename, 
-                "Date": datetime.now().strftime('%Y-%m-%d'), 
-                "Company": username.upper()
-            })
-            processed_items.append(item)
+            # 1. 계산
+            w = safe_float(item.get('weight', 0))
+            calc = calculate_tax_logic(item.get('material', 'Other'), w)
             
-        return processed_items # 리스트 반환
+            # 2. [중요] UI에서 쓰는 이름표(Key)로 변환해서 저장! (여기서 에러 해결)
+            standardized_item = {
+                "File Name": filename,
+                "Date": datetime.now().strftime('%Y-%m-%d'),
+                "Company": username.upper(),
+                
+                "Item Name": item.get('item', 'Unknown'),   # 화면에 보여줄 이름
+                "Material": item.get('material', 'Other'),  # 재질
+                "Weight (kg)": w,                           # 무게
+                "HS Code": item.get('hs_code', '000000'),   # HS코드
+                
+                "Default Tax (KRW)": calc['bad_tax'],       # 세금
+                "exchange_rate": calc['exchange_rate']      # 환율
+            }
+            processed_items.append(standardized_item)
+            
+        return processed_items
         
     except Exception as e:
         print(f"AI Error: {e}")
-        # 에러 시 빈 리스트 대신 에러 항목 1개 반환
+        # 에러 날 때도 이름표 맞춰서 반환
         return [{
             "File Name": filename, "Item Name": "Analysis Failed", 
-            "Material": "Other", "Weight (kg)": 0, "bad_tax": 0, "good_tax": 0
+            "Material": "Other", "Weight (kg)": 0, "HS Code": "000000",
+            "Default Tax (KRW)": 0, "exchange_rate": 1450
         }]
 
 # ==========================================
@@ -283,10 +295,9 @@ else:
                     all_results = []
                     
                     for i, file in enumerate(uploaded_files):
-                        # 리스트 형태로 결과 받음 (여러 개 품목)
                         items = analyze_image(file.read(), file.name, st.session_state['username'])
                         
-                        # 🚨 [수정] 결과 리스트를 전체 결과에 합치기 (extend)
+                        # 결과 합치기
                         if isinstance(items, list):
                             all_results.extend(items)
                         else:
@@ -321,10 +332,9 @@ else:
         mat_options = list(CBAM_DB.keys())
         if "Other" not in mat_options: mat_options.append("Other")
 
-        # 결과가 많을 수 있으므로 UI 구성
         for idx, row in enumerate(results):
-            # 품목명 옆에 (재질)을 표시해서 구분을 쉽게 함
-            with st.expander(f"📄 {row['File Name']} - {row['Item Name']} ({row['Weight (kg)']}kg)", expanded=False):
+            # 🚨 [수정됨] 이제 에러 안 납니다! (키 값을 정확히 맞춤)
+            with st.expander(f"📄 {row.get('File Name','')} - {row.get('Item Name','Unknown')} ({row.get('Weight (kg)',0)}kg)", expanded=False):
                 c1, c2, c3 = st.columns([2, 1, 1])
                 curr_mat = row.get('Material', 'Other')
                 if curr_mat not in mat_options: curr_mat = "Other"
