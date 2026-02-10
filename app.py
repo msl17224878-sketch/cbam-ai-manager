@@ -95,7 +95,6 @@ def safe_float(value):
 # 🧮 핵심 로직
 # ==========================================
 def calculate_tax_logic(material, weight):
-    # 재질 매칭 로직 (정확히 없으면 첫 번째 것 사용)
     if material in CBAM_DB: db = CBAM_DB[material]
     elif CBAM_DB: db = CBAM_DB[list(CBAM_DB.keys())[0]]
     else: db = {"default":0, "optimized":0, "price":0, "exchange_rate":1450}
@@ -103,7 +102,6 @@ def calculate_tax_logic(material, weight):
     if weight <= 0: weight = 1
     rate = db.get('exchange_rate', 1450.0)
     
-    # 세금 계산 (원 단위 절사)
     bad_tax = int((weight/1000) * db['default'] * db['price'] * rate)
     good_tax = int((weight/1000) * db['optimized'] * db['price'] * rate)
     
@@ -127,7 +125,6 @@ def generate_official_excel(data_list):
         fmt_eur = wb.add_format({'border': 1, 'num_format': '€#,##0.00'})
         fmt_krw = wb.add_format({'border': 1, 'num_format': '₩#,##0'})
         
-        # Sheet 1: Summary
         ws1 = wb.add_worksheet("Report_Summary")
         headers1 = ["Report Date", "Company", "Total Items", "Total Weight (Ton)", "Total Tax (EUR)", "Total Tax (KRW)"]
         t_tax_krw = sum([d.get('Default Tax (KRW)', 0) for d in data_list])
@@ -142,7 +139,6 @@ def generate_official_excel(data_list):
         ws1.write(1, 5, t_tax_krw, fmt_krw)
         ws1.set_column('A:F', 20)
 
-        # Sheet 2: Data
         ws2 = wb.add_worksheet("CBAM_Data")
         headers2 = ["No", "Origin", "HS Code", "Item", "Weight (Ton)", "Emission Factor", "Est. Tax (EUR)", "Exch. Rate", "Est. Tax (KRW)"]
         for c, h in enumerate(headers2): ws2.write(0, c, h, fmt_header)
@@ -151,7 +147,6 @@ def generate_official_excel(data_list):
             r = i + 1
             w_ton = d.get('Weight (kg)', 0) / 1000
             mat = d.get('Material', 'Iron/Steel')
-            
             if mat in CBAM_DB: db_info = CBAM_DB[mat]
             elif CBAM_DB: db_info = CBAM_DB[list(CBAM_DB.keys())[0]]
             else: db_info = {'default':0, 'exchange_rate':1450}
@@ -172,27 +167,25 @@ def generate_official_excel(data_list):
     return output.getvalue()
 
 # ------------------------------------------------
-# 🤖 [진짜 AI 모드] GPT-4o 연결 (부활!)
+# 🤖 [업그레이드] 다중 품목 인식 (Multi-Row Extraction)
 # ------------------------------------------------
 def analyze_image(image_bytes, filename, username):
-    # 이미지를 Base64로 인코딩
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     try:
-        # DB에 있는 카테고리 목록을 AI에게 알려줌 (정확한 매칭을 위해)
         cats = list(CBAM_DB.keys())
-        
+        # 프롬프트 강화: "모든 항목을 리스트로 찾아라"
         response = client.chat.completions.create(
             model="gpt-4o", 
-            temperature=0.0, # 창의성 0 (정확도 우선)
+            temperature=0.0, 
             messages=[
                 {
                     "role": "system", 
-                    "content": f"Analyze the shipping invoice. Classify the item strictly into one of these categories: {cats}. If unsure, use 'Other'. Extract the 'Net Weight' or 'Total Weight' in kg (remove units, return number only). Find the HS Code if available. Return JSON format: {{'item': 'Item Name', 'material': 'Category Name', 'weight': 1000, 'hs_code': '000000'}}."
+                    "content": f"You are a CBAM expert. Identify ALL distinct items in the invoice image. For each item, classify strictly into one of: {cats}. If unsure, use 'Other'. Extract 'Net Weight' in kg (remove units). Find HS Code. Return a JSON object with a key 'items' containing a list: {{'items': [{{'item': 'Name1', 'material': 'Cat1', 'weight': 1000, 'hs_code': '000000'}}, ...]}}."
                 },
                 {
                     "role": "user", 
                     "content": [
-                        {"type": "text", "text": "Extract CBAM data from this invoice image."}, 
+                        {"type": "text", "text": "Extract all CBAM items from this invoice."}, 
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
                 }
@@ -200,31 +193,30 @@ def analyze_image(image_bytes, filename, username):
             response_format={"type": "json_object"}
         )
         
-        # AI 응답 파싱
-        data = json.loads(response.choices[0].message.content)
+        result_json = json.loads(response.choices[0].message.content)
+        items_list = result_json.get('items', [])
         
-        # 안전한 숫자 변환 (콤마 제거 등)
-        data['weight'] = safe_float(data.get('weight', 0))
-        
-        # 세금 계산 로직 연결
-        calc = calculate_tax_logic(data.get('material', 'Other'), data['weight'])
-        data.update(calc)
-        
-        # 메타데이터 추가
-        data.update({
-            "File Name": filename, 
-            "Date": datetime.now().strftime('%Y-%m-%d'), 
-            "Company": username.upper()
-        })
-        return data
+        processed_items = []
+        for item in items_list:
+            item['weight'] = safe_float(item.get('weight', 0))
+            calc = calculate_tax_logic(item.get('material', 'Other'), item['weight'])
+            item.update(calc)
+            item.update({
+                "File Name": filename, 
+                "Date": datetime.now().strftime('%Y-%m-%d'), 
+                "Company": username.upper()
+            })
+            processed_items.append(item)
+            
+        return processed_items # 리스트 반환
         
     except Exception as e:
-        # 에러 발생 시 로그 출력 및 기본값 반환
         print(f"AI Error: {e}")
-        return {
+        # 에러 시 빈 리스트 대신 에러 항목 1개 반환
+        return [{
             "File Name": filename, "Item Name": "Analysis Failed", 
             "Material": "Other", "Weight (kg)": 0, "bad_tax": 0, "good_tax": 0
-        }
+        }]
 
 # ==========================================
 # 🖥️ 화면 구성
@@ -251,7 +243,7 @@ if not st.session_state['logged_in']:
                         st.session_state['credits'] = user_credits
                         st.rerun()
                     else:
-                        st.error("❌ 로그인 실패: 정보를 확인하세요.")
+                        st.error("❌ 로그인 실패")
                 else:
                     st.error("⚠️ DB 연결 실패")
 
@@ -262,27 +254,20 @@ else:
         st.success("🟢 System Online")
         st.divider()
         st.write(f"👤 **{st.session_state['username'].upper()}** 님")
-        
         current_credits = st.session_state.get('credits', 0)
-        if current_credits >= 999999:
-            st.metric("잔여 크레딧", "♾️ 무제한 (VIP)")
-        else:
-            st.metric("잔여 크레딧", f"{current_credits} 회")
-            
-        st.markdown("---")
+        if current_credits >= 999999: st.metric("잔여 크레딧", "♾️ 무제한 (VIP)")
+        else: st.metric("잔여 크레딧", f"{current_credits} 회")
         if st.button("로그아웃"):
             st.session_state['logged_in'] = False
             st.rerun()
 
     st.markdown("## 🏭 대시보드 (Dashboard)")
-    
-    # 실시간 환율 (첫번째 항목 기준)
     if CBAM_DB: krw_rate = CBAM_DB[list(CBAM_DB.keys())[0]].get('exchange_rate', 1450)
     else: krw_rate = 1450
     st.info(f"💶 **실시간 환율 적용 중:** 1 EUR = **{krw_rate:,.2f} KRW** (Google Finance 연동)")
 
     with st.container(border=True):
-        st.subheader("📂 인보이스 업로드")
+        st.subheader("📂 인보이스 업로드 (다중 품목 인식 지원)")
         uploaded_files = st.file_uploader("파일 추가", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
         
         if uploaded_files:
@@ -293,22 +278,20 @@ else:
             
             if can_run:
                 if st.button(f"🚀 AI 분석 시작", type="primary"):
-                    progress_text = "AI가 문서를 분석하고 있습니다..."
+                    progress_text = "AI가 문서 내 모든 품목을 스캔 중입니다..."
                     my_bar = st.progress(0, text=progress_text)
                     all_results = []
                     
                     for i, file in enumerate(uploaded_files):
-                        # 🚀 여기서 진짜 AI가 호출됩니다!
-                        res = analyze_image(file.read(), file.name, st.session_state['username'])
+                        # 리스트 형태로 결과 받음 (여러 개 품목)
+                        items = analyze_image(file.read(), file.name, st.session_state['username'])
                         
-                        mapped = res.copy()
-                        mapped["Default Tax (KRW)"] = res.get("bad_tax")
-                        mapped["Item Name"] = res.get("item")
-                        mapped["Material"] = res.get("material_display")
-                        mapped["Weight (kg)"] = res.get("weight")
-                        mapped["HS Code"] = res.get("hs_code")
-                        mapped["exchange_rate"] = res.get("exchange_rate")
-                        all_results.append(mapped)
+                        # 🚨 [수정] 결과 리스트를 전체 결과에 합치기 (extend)
+                        if isinstance(items, list):
+                            all_results.extend(items)
+                        else:
+                            all_results.append(items)
+                            
                         my_bar.progress((i + 1) / len(uploaded_files))
                     
                     st.session_state['batch_results'] = all_results
@@ -316,11 +299,9 @@ else:
                     if not is_unlimited:
                         st.session_state['credits'] -= required_credits
                         st.toast(f"💳 {required_credits} 크레딧 차감 완료")
-                    else:
-                        st.toast("♾️ 무제한 플랜 적용 중")
                     st.rerun()
             else:
-                st.error(f"🚫 **크레딧 부족!** (보유: {current_credits}회 / 필요: {required_credits}회)")
+                st.error(f"🚫 **크레딧 부족!**")
 
     if st.session_state['batch_results']:
         st.divider()
@@ -340,8 +321,10 @@ else:
         mat_options = list(CBAM_DB.keys())
         if "Other" not in mat_options: mat_options.append("Other")
 
+        # 결과가 많을 수 있으므로 UI 구성
         for idx, row in enumerate(results):
-            with st.expander(f"📄 {row['File Name']} : {row['Item Name']}", expanded=False):
+            # 품목명 옆에 (재질)을 표시해서 구분을 쉽게 함
+            with st.expander(f"📄 {row['File Name']} - {row['Item Name']} ({row['Weight (kg)']}kg)", expanded=False):
                 c1, c2, c3 = st.columns([2, 1, 1])
                 curr_mat = row.get('Material', 'Other')
                 if curr_mat not in mat_options: curr_mat = "Other"
