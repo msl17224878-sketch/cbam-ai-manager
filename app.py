@@ -6,6 +6,7 @@ import io
 from openai import OpenAI
 from datetime import datetime
 import difflib 
+import uuid # 🚨 [추가] 고유 ID 생성을 위한 도구
 
 # ==========================================
 # 🎨 [UI 설정]
@@ -92,32 +93,33 @@ def safe_float(value):
     try: return float(str(value).replace(',', '').replace('kg', '').replace('KG', '').strip())
     except: return 0.0
 
-# ------------------------------------------------
-# 🕵️‍♂️ [업그레이드] 강제 매칭 함수 (Keyword Matching)
-# ------------------------------------------------
 def force_match_material(ai_item_name, ai_material, db_keys):
-    # 1. AI가 찾아온 품목명(Item Name)을 소문자로 변환
     name_lower = str(ai_item_name).lower()
     mat_lower = str(ai_material).lower()
     
-    # 2. 키워드 검사 (여기가 핵심!)
-    # 나사, 볼트, 스크류가 들어있으면 무조건 Steel (Bolts/Screws)로 연결
+    # 1. 키워드 검사 (강력 매칭)
     if "bolt" in name_lower or "screw" in name_lower:
-        # DB 키 중에 'Bolt'가 포함된 놈을 찾음
         found = [k for k in db_keys if "Bolt" in k or "Screw" in k]
         if found: return found[0]
         
-    # 알루미늄이 들어있으면 DB의 Aluminum (Bars...) 등으로 연결
     if "aluminum" in name_lower or "aluminium" in name_lower:
         found = [k for k in db_keys if "Aluminum" in k]
+        # Ingot 우선 처리
+        if "ingot" in name_lower:
+            ingot_found = [k for k in db_keys if "Ingot" in k]
+            if ingot_found: return ingot_found[0]
         if found: return found[0]
         
-    # 시트(Sheet), 플레이트(Plate) 확인
     if "sheet" in name_lower or "plate" in name_lower:
         found = [k for k in db_keys if "Sheet" in k or "Plate" in k]
         if found: return found[0]
 
-    # 3. 키워드로 못 찾으면 difflib(유사도) 사용
+    # Cement 추가
+    if "cement" in name_lower or "cmnt" in name_lower:
+        found = [k for k in db_keys if "cement" in k.lower()]
+        if found: return found[0]
+
+    # 2. 유사도 매칭
     matches = difflib.get_close_matches(ai_material, db_keys, n=1, cutoff=0.4)
     if matches: return matches[0]
     
@@ -226,14 +228,10 @@ def analyze_image(image_bytes, filename, username):
         processed_items = []
         for item in items_list:
             w = safe_float(item.get('weight', 0))
-            
-            # 🚨 [여기 수정됨] 강제 매칭 로직 적용
-            # AI가 'Steel Bolt'라고 가져오면 -> 'Steel (Bolts/Screws)'로 바꿈
             raw_item_name = item.get('item', '')
             raw_material = item.get('material', 'Other')
             
             corrected_mat = force_match_material(raw_item_name, raw_material, list(CBAM_DB.keys()))
-            
             calc = calculate_tax_logic(corrected_mat, w)
             
             processed_items.append({
@@ -241,7 +239,7 @@ def analyze_image(image_bytes, filename, username):
                 "Date": datetime.now().strftime('%Y-%m-%d'),
                 "Company": username.upper(),
                 "Item Name": raw_item_name,
-                "Material": corrected_mat, # 보정된 재질 이름
+                "Material": corrected_mat,
                 "Weight (kg)": w,
                 "HS Code": item.get('hs_code', calc['hs_code']),
                 "Default Tax (KRW)": calc['bad_tax'],
@@ -264,6 +262,8 @@ def analyze_image(image_bytes, filename, username):
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'batch_results' not in st.session_state: st.session_state['batch_results'] = None
+# 🚨 [추가] 실행 ID (캐시 문제 해결용)
+if 'run_id' not in st.session_state: st.session_state['run_id'] = str(uuid.uuid4())
 
 if not st.session_state['logged_in']:
     c1, c2, c3 = st.columns([1, 2, 1])
@@ -315,6 +315,9 @@ else:
             
             if can_run:
                 if st.button(f"🚀 AI 분석 시작", type="primary"):
+                    # 🚨 [핵심 수정] 버튼 누를 때마다 새로운 ID 발급 -> 화면 초기화
+                    st.session_state['run_id'] = str(uuid.uuid4())
+                    
                     progress_text = "AI가 문서 내 모든 품목을 스캔 중입니다..."
                     my_bar = st.progress(0, text=progress_text)
                     all_results = []
@@ -351,19 +354,25 @@ else:
         if "Other" not in mat_options: mat_options.append("Other")
 
         updated_final_results = []
+        run_id = st.session_state['run_id'] # 현재 실행 ID
+
         for idx, row in enumerate(results):
             with st.expander(f"📄 {row.get('File Name','')} - {row.get('Item Name','Unknown')} ({row.get('Weight (kg)',0)}kg)", expanded=False):
                 c1, c2, c3 = st.columns([2, 1, 1])
                 
                 curr_mat = row.get('Material', 'Other')
                 if curr_mat not in mat_options: curr_mat = "Other"
-                new_mat = c1.selectbox("재질", mat_options, index=mat_options.index(curr_mat), key=f"m_{idx}")
+                
+                # 🚨 [핵심 수정] key 값에 run_id를 붙여서 매번 새로운 입력창인 것처럼 속임
+                unique_key = f"{idx}_{run_id}"
+                
+                new_mat = c1.selectbox("재질", mat_options, index=mat_options.index(curr_mat), key=f"m_{unique_key}")
                 
                 curr_hs = str(row.get('HS Code', '000000'))
-                new_hs = c2.text_input("HS Code", value=curr_hs, key=f"h_{idx}")
+                new_hs = c2.text_input("HS Code", value=curr_hs, key=f"h_{unique_key}")
                 
                 curr_w = safe_float(row.get('Weight (kg)', 0))
-                new_weight = c3.number_input("중량 (kg)", value=curr_w, key=f"w_{idx}")
+                new_weight = c3.number_input("중량 (kg)", value=curr_w, key=f"w_{unique_key}")
                 
                 recalc = calculate_tax_logic(new_mat, new_weight)
                 row.update({
