@@ -1,6 +1,4 @@
 streamlit
-openai
+google-generativeai
 pandas
-reportlab
 xlsxwriter
-openpyxl
