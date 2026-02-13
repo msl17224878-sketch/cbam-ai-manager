@@ -197,27 +197,43 @@ def safe_float(value):
 def force_match_material(ai_item_name, ai_material, db_keys):
     name_lower, mat_lower = str(ai_item_name).lower(), str(ai_material).lower()
     
+    # 1. 파이프/튜브
     if "pipe" in name_lower or "tube" in name_lower:
         found = [k for k in db_keys if "Pipes" in k]
         if found: 
              if "alum" in name_lower: return "Aluminum (Pipes/Tubes)"
              return "Steel (Pipes/Tubes)"
+             
+    # 2. 와이어/케이블
     if "wire" in name_lower or "cable" in name_lower:
         found = [k for k in db_keys if "Wire" in k]
         if found: return found[0]
+        
+    # 3. 구조물
     if "structure" in name_lower or "beam" in name_lower:
         found = [k for k in db_keys if "Structures" in k]
         if found: return found[0]
-    if "bolt" in name_lower or "screw" in name_lower or "nut" in name_lower:
+        
+    # 4. 볼트/너트/와셔
+    if "bolt" in name_lower or "screw" in name_lower or "nut" in name_lower or "washer" in name_lower:
         found = [k for k in db_keys if "Bolt" in k or "Screw" in k]
         if found: return found[0]
+        
+    # 5. 알루미늄 (🚨 여기가 원인이었습니다! 잉곳/봉/판재 완벽 분리)
     if "aluminum" in name_lower or "aluminium" in name_lower:
         found = [k for k in db_keys if "Aluminum" in k]
+        if "ingot" in name_lower: return "Aluminum (Ingots)"
+        if "bar" in name_lower or "rod" in name_lower: return "Aluminum (Bars/Rods)"
+        if "foil" in name_lower: return "Aluminum (Foil)"
+        if "plate" in name_lower or "sheet" in name_lower: return "Aluminum (Sheets/Plates)"
         if found: return found[0]
+
+    # 6. 시멘트
     if "cement" in name_lower or "cmnt" in name_lower:
         found = [k for k in db_keys if "cement" in k.lower()]
         if found: return found[0]
 
+    # 매칭 실패 시 유사도 검사
     matches = difflib.get_close_matches(ai_material, db_keys, n=1, cutoff=0.4)
     if matches: return matches[0]
     return "Other"
@@ -452,3 +468,4 @@ else:
         if not history_df.empty:
             st.dataframe(history_df[['Date', 'File Name', 'Item Name', 'Material', 'Weight (kg)', 'HS Code']], use_container_width=True)
         else: st.info("📭 저장된 기록이 없습니다.")
+
