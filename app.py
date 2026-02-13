@@ -128,7 +128,6 @@ def load_user_data():
         return df
     except: return pd.DataFrame()
 
-# 🚨 [핵심 수정 1] 구글 시트 과부하 방지를 위해 ttl을 600초(10분)로 변경
 @st.cache_data(ttl=600) 
 def load_cbam_db():
     master_db = {
@@ -225,7 +224,7 @@ def force_match_material(ai_item_name, ai_material, db_keys):
     return "Other"
 
 # ==========================================
-# 🧮 핵심 로직 & 데이터 검증 시스템
+# 🧮 핵심 로직 & 데이터 검증 시스템 (불순물 제거 필터 장착)
 # ==========================================
 def calculate_tax_logic(material, weight):
     db = CBAM_DB.get(material, {"default":0, "optimized":0, "price":0, "exchange_rate":1450})
@@ -242,7 +241,15 @@ def calculate_tax_logic(material, weight):
 def validate_data(ai_hs, ai_mat):
     db_hs = CBAM_DB.get(ai_mat, {}).get('hs_code', '000000')
     if ai_mat == "Other": return "⚠️ 미등록 카테고리 (수동 확인 필요)"
-    if str(ai_hs)[:4] != str(db_hs)[:4]: return f"🚩 HS코드 불일치 (DB권장: {db_hs})"
+    
+    # 🚨 [핵심 수정 1] AI가 가져온 글자에서 '숫자'만 완벽하게 추출해서 비교
+    clean_ai = ''.join(filter(str.isdigit, str(ai_hs)))
+    clean_db = ''.join(filter(str.isdigit, str(db_hs)))
+    
+    # 앞 4자리 비교 (숫자가 없으면 무조건 에러 방지)
+    if not clean_ai or clean_ai[:4] != clean_db[:4]: 
+        return f"🚩 HS코드 불일치 (DB권장: {db_hs})"
+    
     return "✅ 검증 완료 (정상)"
 
 # ==========================================
@@ -304,9 +311,10 @@ def analyze_image(image_bytes, filename, username):
         model = genai.GenerativeModel('gemini-2.0-flash') 
         cats_str = ", ".join(list(CBAM_DB.keys()))
         
-        prompt = f"""You are a CBAM expert. Identify distinct items relevant to CBAM (Iron, Steel, Aluminum, Cement). IGNORE packing materials. 
+        # 🚨 [핵심 수정 2] 프롬프트에서 오해를 살 수 있는 HS코드 예시를 제거함
+        prompt = f"""You are a CBAM expert. Extract distinct items relevant to CBAM (Iron, Steel, Aluminum, Cement). IGNORE packing materials. 
         Select Material strictly from: [{cats_str}]. 
-        Return ONLY valid JSON: {{"items": [{{"item": "name", "material": "category", "weight": 1000, "hs_code": "731800"}}]}}"""
+        Return ONLY valid JSON: {{"items": [{{"item": "Item Name", "material": "Category", "weight": 1000, "hs_code": "Extract numbers only"}}]}}"""
         
         response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": image_bytes}])
         
@@ -321,7 +329,9 @@ def analyze_image(image_bytes, filename, username):
             w = safe_float(item.get('weight', 0))
             raw_name = item.get('item', '')
             raw_mat = item.get('material', 'Other')
-            ai_hs = str(item.get('hs_code', '')).replace('.', '').strip()
+            
+            # 숫자만 깔끔하게 추출해서 저장
+            ai_hs = ''.join(filter(str.isdigit, str(item.get('hs_code', ''))))
             
             corrected_mat = force_match_material(raw_name, raw_mat, list(CBAM_DB.keys()))
             calc = calculate_tax_logic(corrected_mat, w)
@@ -353,7 +363,6 @@ def process_analysis():
         is_unlimited = current_credits >= 999999
         
         if is_unlimited or (current_credits >= required_credits):
-            # 🚨 [핵심 수정 2] 분석을 누를 때마다 고유 ID 생성 (고스트 상태 완벽 차단)
             st.session_state['run_id'] = str(uuid.uuid4())
             
             with st.spinner("Gemini 엔진이 KTC 규격에 맞춰 정밀 분석 중입니다..."):
@@ -420,7 +429,7 @@ else:
             if "Other" not in mat_options: mat_options.append("Other")
 
             updated_final_results = []
-            current_run_id = st.session_state['run_id'] # 현재 실행 ID 가져오기
+            current_run_id = st.session_state['run_id'] 
 
             for idx, row in enumerate(results):
                 val_status = row.get('Validation', '')
@@ -430,7 +439,6 @@ else:
                 with st.expander(f"📄 {row.get('File Name','')} - {row.get('Item Name','')} | {val_status}", expanded=False):
                     c1, c2, c3 = st.columns([2, 1, 1])
                     
-                    # 🚨 [핵심 수정 3] 위젯에 고유 ID(unique_key)를 부여하여 섞임 방지
                     unique_key = f"{idx}_{current_run_id}"
                     
                     curr_mat = row.get('Material', 'Other')
