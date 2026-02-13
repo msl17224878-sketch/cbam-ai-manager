@@ -61,7 +61,7 @@ USER_DB_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRqCIpXf7jM4wyn8E
 CBAM_DATA_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTkYfVcC9EAv_xW0FChVWK3oMsPaxXiRL-hOQQeGT_aLsUG044s1L893er36HVJUpgTCrsM0xElFpW/pub?gid=747982569&single=true&output=csv"
 
 # ------------------------------------------------
-# 💾 데이터베이스(DB) 관리 (기존 유지)
+# 💾 데이터베이스(DB) 관리
 # ------------------------------------------------
 def init_db():
     conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
@@ -113,14 +113,6 @@ def load_from_db(username):
         df = df.sort_values(by='id', ascending=False)
     return df
 
-def clear_my_history(username):
-    conn = sqlite3.connect('cbam_database.db', check_same_thread=False)
-    c = conn.cursor()
-    target_user = str(username).upper().strip()
-    c.execute("DELETE FROM history WHERE username = ?", (target_user,))
-    conn.commit()
-    conn.close()
-
 init_db()
 
 @st.cache_data(ttl=60)
@@ -136,7 +128,8 @@ def load_user_data():
         return df
     except: return pd.DataFrame()
 
-@st.cache_data(ttl=1) 
+# 🚨 [핵심 수정 1] 구글 시트 과부하 방지를 위해 ttl을 600초(10분)로 변경
+@st.cache_data(ttl=600) 
 def load_cbam_db():
     master_db = {
         "Steel (Pipes/Tubes)": {"default": 2.50, "optimized": 1.9, "hs_code": "730400", "price": 85.0, "exchange_rate": 1450},
@@ -197,29 +190,24 @@ def safe_float(value):
 def force_match_material(ai_item_name, ai_material, db_keys):
     name_lower, mat_lower = str(ai_item_name).lower(), str(ai_material).lower()
     
-    # 1. 파이프/튜브
     if "pipe" in name_lower or "tube" in name_lower:
         found = [k for k in db_keys if "Pipes" in k]
         if found: 
              if "alum" in name_lower: return "Aluminum (Pipes/Tubes)"
              return "Steel (Pipes/Tubes)"
              
-    # 2. 와이어/케이블
     if "wire" in name_lower or "cable" in name_lower:
         found = [k for k in db_keys if "Wire" in k]
         if found: return found[0]
         
-    # 3. 구조물
     if "structure" in name_lower or "beam" in name_lower:
         found = [k for k in db_keys if "Structures" in k]
         if found: return found[0]
         
-    # 4. 볼트/너트/와셔
     if "bolt" in name_lower or "screw" in name_lower or "nut" in name_lower or "washer" in name_lower:
         found = [k for k in db_keys if "Bolt" in k or "Screw" in k]
         if found: return found[0]
         
-    # 5. 알루미늄 (🚨 여기가 원인이었습니다! 잉곳/봉/판재 완벽 분리)
     if "aluminum" in name_lower or "aluminium" in name_lower:
         found = [k for k in db_keys if "Aluminum" in k]
         if "ingot" in name_lower: return "Aluminum (Ingots)"
@@ -228,18 +216,16 @@ def force_match_material(ai_item_name, ai_material, db_keys):
         if "plate" in name_lower or "sheet" in name_lower: return "Aluminum (Sheets/Plates)"
         if found: return found[0]
 
-    # 6. 시멘트
     if "cement" in name_lower or "cmnt" in name_lower:
         found = [k for k in db_keys if "cement" in k.lower()]
         if found: return found[0]
 
-    # 매칭 실패 시 유사도 검사
     matches = difflib.get_close_matches(ai_material, db_keys, n=1, cutoff=0.4)
     if matches: return matches[0]
     return "Other"
 
 # ==========================================
-# 🧮 1. 핵심 로직 & 데이터 검증 시스템 (필살기 1)
+# 🧮 핵심 로직 & 데이터 검증 시스템
 # ==========================================
 def calculate_tax_logic(material, weight):
     db = CBAM_DB.get(material, {"default":0, "optimized":0, "price":0, "exchange_rate":1450})
@@ -260,7 +246,7 @@ def validate_data(ai_hs, ai_mat):
     return "✅ 검증 완료 (정상)"
 
 # ==========================================
-# 📊 2. KTC 표준 리포트 출력 (필살기 2 & 3)
+# 📊 KTC 표준 리포트 출력
 # ==========================================
 def generate_official_excel(data_list):
     if isinstance(data_list, pd.DataFrame):
@@ -279,9 +265,7 @@ def generate_official_excel(data_list):
         fmt_warn = wb.add_format({'border': 1, 'font_color': 'red'})
         fmt_ok = wb.add_format({'border': 1, 'align':'center'})
 
-        # KTC용 본문 시트 (필살기 2, 3 적용)
         ws2 = wb.add_worksheet("KTC_CBAM_Submission")
-        # EU 최신 규정 준수 선언
         ws2.merge_range('A1:I1', f"CBAM Official Data (Ref: EU Regulation 2026/XXXX) - Integrity Checked", fmt_ktc_head)
         
         headers2 = ["No", "Origin", "HS Code", "Item Name", "Net Weight(t)", "Emission Factor", "Est. Tax (EUR)", "Est. Tax (KRW)", "Data Validation"]
@@ -304,7 +288,6 @@ def generate_official_excel(data_list):
             ws2.write(r, 6, (d.get('Default Tax (KRW)', 0)/rate) if rate>0 else 0, fmt_eur)
             ws2.write(r, 7, d.get('Default Tax (KRW)', 0), fmt_krw)
             
-            # 빨간색 경고 표시
             if "🚩" in val_msg or "⚠️" in val_msg: ws2.write(r, 8, val_msg, fmt_warn)
             else: ws2.write(r, 8, val_msg, fmt_ok)
             
@@ -314,11 +297,11 @@ def generate_official_excel(data_list):
     return output.getvalue()
 
 # ==========================================
-# 🤖 3. Gemini 연동 AI 분석 (Gemini 업데이트)
+# 🤖 Gemini 연동 AI 분석
 # ==========================================
 def analyze_image(image_bytes, filename, username):
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash') # Gemini 2.0 엔진
+        model = genai.GenerativeModel('gemini-2.0-flash') 
         cats_str = ", ".join(list(CBAM_DB.keys()))
         
         prompt = f"""You are a CBAM expert. Identify distinct items relevant to CBAM (Iron, Steel, Aluminum, Cement). IGNORE packing materials. 
@@ -327,7 +310,6 @@ def analyze_image(image_bytes, filename, username):
         
         response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": image_bytes}])
         
-        # JSON 클렌징
         json_str = response.text
         if '```json' in json_str: json_str = json_str.split('```json')[1].split('```')[0]
         elif '```' in json_str: json_str = json_str.split('```')[1].split('```')[0]
@@ -345,7 +327,6 @@ def analyze_image(image_bytes, filename, username):
             calc = calculate_tax_logic(corrected_mat, w)
             final_hs = ai_hs if (ai_hs and ai_hs != '000000') else calc['hs_code']
             
-            # 🚨 실시간 검증 실행
             validation_result = validate_data(final_hs, corrected_mat)
             
             processed_items.append({
@@ -372,7 +353,9 @@ def process_analysis():
         is_unlimited = current_credits >= 999999
         
         if is_unlimited or (current_credits >= required_credits):
+            # 🚨 [핵심 수정 2] 분석을 누를 때마다 고유 ID 생성 (고스트 상태 완벽 차단)
             st.session_state['run_id'] = str(uuid.uuid4())
+            
             with st.spinner("Gemini 엔진이 KTC 규격에 맞춰 정밀 분석 중입니다..."):
                 all_results = []
                 for file in uploaded_files:
@@ -392,6 +375,7 @@ def process_analysis():
 # ==========================================
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'batch_results' not in st.session_state: st.session_state['batch_results'] = None
+if 'run_id' not in st.session_state: st.session_state['run_id'] = str(uuid.uuid4())
 
 if not st.session_state['logged_in']:
     c1, c2, c3 = st.columns([1, 2, 1])
@@ -432,23 +416,28 @@ else:
             m2.metric("총 중량", f"{sum([safe_float(r.get('Weight (kg)',0)) for r in results]):,.0f} kg")
             m3.metric("EU 규정 준수 검증", "완료 (EU Reg 2026)")
 
-            mat_options = list(CBAM_DB.keys()) + ["Other"]
+            mat_options = list(CBAM_DB.keys())
+            if "Other" not in mat_options: mat_options.append("Other")
 
             updated_final_results = []
+            current_run_id = st.session_state['run_id'] # 현재 실행 ID 가져오기
+
             for idx, row in enumerate(results):
                 val_status = row.get('Validation', '')
-                # 🚨 검증 결과에 따라 UI 알림 표시
                 if "🚩" in val_status: st.error(f"[{row.get('Item Name')}] {val_status}")
                 elif "⚠️" in val_status: st.warning(f"[{row.get('Item Name')}] {val_status}")
                 
                 with st.expander(f"📄 {row.get('File Name','')} - {row.get('Item Name','')} | {val_status}", expanded=False):
                     c1, c2, c3 = st.columns([2, 1, 1])
-                    curr_mat = row.get('Material', 'Other')
-                    new_mat = c1.selectbox("재질", mat_options, index=mat_options.index(curr_mat) if curr_mat in mat_options else len(mat_options)-1, key=f"m_{idx}")
-                    new_hs = c2.text_input("HS Code", value=str(row.get('HS Code', '')), key=f"h_{idx}")
-                    new_weight = c3.number_input("중량 (kg)", value=safe_float(row.get('Weight (kg)', 0)), key=f"w_{idx}")
                     
-                    # 값 수정 시 재검증 로직
+                    # 🚨 [핵심 수정 3] 위젯에 고유 ID(unique_key)를 부여하여 섞임 방지
+                    unique_key = f"{idx}_{current_run_id}"
+                    
+                    curr_mat = row.get('Material', 'Other')
+                    new_mat = c1.selectbox("재질", mat_options, index=mat_options.index(curr_mat) if curr_mat in mat_options else len(mat_options)-1, key=f"m_{unique_key}")
+                    new_hs = c2.text_input("HS Code", value=str(row.get('HS Code', '')), key=f"h_{unique_key}")
+                    new_weight = c3.number_input("중량 (kg)", value=safe_float(row.get('Weight (kg)', 0)), key=f"w_{unique_key}")
+                    
                     recalc = calculate_tax_logic(new_mat, new_weight)
                     new_val = validate_data(new_hs, new_mat)
                     
@@ -468,4 +457,3 @@ else:
         if not history_df.empty:
             st.dataframe(history_df[['Date', 'File Name', 'Item Name', 'Material', 'Weight (kg)', 'HS Code']], use_container_width=True)
         else: st.info("📭 저장된 기록이 없습니다.")
-
